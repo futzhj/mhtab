@@ -122,6 +122,10 @@ private:
 
     /* W5-3: 工具栏 */
     HWND toolbar_ = nullptr;
+
+    /* W6-3: 设置 ini 路径 + 当前主题名（缓存避免每次重读 SessionStore） */
+    String settings_ini_path_;
+    String current_theme_name_ = L"FlatModern";
 };
 
 } /* namespace mhx */

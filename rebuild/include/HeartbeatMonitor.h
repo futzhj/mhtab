@@ -19,10 +19,23 @@ class ChildProcessManager;
 
 class HeartbeatMonitor {
 public:
-    static constexpr ULONG kIntervalMs = 1000;   /* 主进程每秒发一次心跳 */
-    static constexpr ULONG kTimeoutMs  = 3000;   /* 子进程 3 秒不回 → 视为挂起 */
+    /* 默认时序参数（W6-3 起可由 SetTimings 覆盖） */
+    static constexpr ULONG kDefaultIntervalMs = 1000;   /* 主进程每秒发一次心跳 */
+    static constexpr ULONG kDefaultTimeoutMs  = 3000;   /* 子进程 3 秒不回 → 视为挂起 */
 
     HeartbeatMonitor(TabController& tab_ctrl, ChildProcessManager& child_mgr);
+
+    /**
+     * W6-3: 运行时调整心跳间隔和超时时长（由 SettingsDialog 触发）。
+     * 立即生效，下一轮 Tick 即采用新值。
+     *
+     * 参数下限保护：interval >= 100ms，timeout >= 500ms 且必须 > interval。
+     * 不合规的值会自动 clamp 到最近的合法值。
+     */
+    void SetTimings(ULONG interval_ms, ULONG timeout_ms);
+
+    ULONG GetIntervalMs() const noexcept { return interval_ms_; }
+    ULONG GetTimeoutMs()  const noexcept { return timeout_ms_;  }
 
     HeartbeatMonitor(const HeartbeatMonitor&) = delete;
     HeartbeatMonitor& operator=(const HeartbeatMonitor&) = delete;
@@ -71,6 +84,8 @@ private:
     TabController&       tab_ctrl_;
     ChildProcessManager& child_mgr_;
     ULONG                last_broadcast_ms_ = 0;
+    ULONG                interval_ms_       = kDefaultIntervalMs;   /* W6-3 */
+    ULONG                timeout_ms_        = kDefaultTimeoutMs;    /* W6-3 */
     std::vector<SlotState> slots_;
 };
 

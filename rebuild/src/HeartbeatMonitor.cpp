@@ -17,6 +17,25 @@ HeartbeatMonitor::HeartbeatMonitor(TabController& tab_ctrl, ChildProcessManager&
 }
 
 /* ============================================================
+ * W6-3: SetTimings
+ *
+ * 调整心跳间隔与超时阈值。值过小会让 Tab 频繁触发"假死清理"，
+ * 过大又会让响应变慢。这里 clamp 到一组合理范围：
+ *   interval ≥ 100ms      （避免 100Hz 以上风暴）
+ *   timeout  ≥ 500ms      （留出消息泵处理时间）
+ *   timeout  > interval   （否则永远超时）
+ * ============================================================ */
+void HeartbeatMonitor::SetTimings(ULONG interval_ms, ULONG timeout_ms) {
+    if (interval_ms < 100)  interval_ms = 100;
+    if (timeout_ms  < 500)  timeout_ms  = 500;
+    if (timeout_ms  <= interval_ms) timeout_ms = interval_ms + 200;
+    interval_ms_ = interval_ms;
+    timeout_ms_  = timeout_ms;
+    MHX_LOG_INFO(L"Heartbeat timings updated: interval=%lu timeout=%lu",
+                 interval_ms_, timeout_ms_);
+}
+
+/* ============================================================
  * 注册 / 注销
  * ============================================================ */
 void HeartbeatMonitor::RegisterSlot(int slot_id) {
@@ -60,8 +79,8 @@ int HeartbeatMonitor::Tick() {
     ULONG now = ::GetTickCount();
     int killed = 0;
 
-    /* 1. 周期发送心跳 */
-    bool need_broadcast = (now - last_broadcast_ms_) >= kIntervalMs;
+    /* 1. 周期发送心跳（W6-3: 间隔可配置） */
+    bool need_broadcast = (now - last_broadcast_ms_) >= interval_ms_;
     if (need_broadcast) {
         last_broadcast_ms_ = now;
 
@@ -74,11 +93,11 @@ int HeartbeatMonitor::Tick() {
         });
     }
 
-    /* 2. 检查超时 */
+    /* 2. 检查超时（W6-3: 阈值可配置） */
     std::vector<int> dead_ids;
     for (auto& st : slots_) {
         ULONG idle = now - st.last_response;
-        if (idle > kTimeoutMs) {
+        if (idle > timeout_ms_) {
             ++st.timeout_count;
             MHX_LOG_WARN(L"Heartbeat timeout: slot=%d idle=%lums count=%d",
                          st.slot_id, idle, st.timeout_count);

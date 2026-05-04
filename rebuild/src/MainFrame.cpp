@@ -13,6 +13,7 @@
 #include "ChildProcessManager.h"
 #include "HeartbeatMonitor.h"
 #include "SessionStore.h"
+#include "SettingsDialog.h"
 #include "IpcProtocol.h"
 #include "Utils.h"
 #include "resource/resource.h"
@@ -227,8 +228,14 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
     heartbeat_ = std::make_unique<HeartbeatMonitor>(*tab_ctrl_, *child_mgr_);
 
     /* W4: SessionStore - ini 路径为 <exe_dir>\mhtabx.ini */
-    session_store_ = std::make_unique<SessionStore>(
-        utils::GetExecutableDirectory() + L"mhtabx.ini");
+    String ini_path = utils::GetExecutableDirectory() + L"mhtabx.ini";
+    session_store_ = std::make_unique<SessionStore>(ini_path);
+
+    /* W6-3: 从 ini 读取运行时配置并应用到 HeartbeatMonitor */
+    settings_ini_path_ = ini_path;
+    SettingsValues sv = LoadSettings(ini_path);
+    heartbeat_->SetTimings(sv.interval_ms, sv.timeout_ms);
+    current_theme_name_ = sv.theme_name;
 
     /* W5-3: 工具栏 (图标 + 文字) - 复用菜单 ID 走 WM_COMMAND */
     toolbar_ = ::CreateWindowExW(
@@ -595,6 +602,18 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
         case ID_FILE_EXIT:
             ::PostMessageW(hwnd_, WM_CLOSE, 0, 0);
             return 0;
+
+        case ID_FILE_SETTINGS: {
+            /* W6-3: 弹出模态设置对话框，OK 后立即应用新值 */
+            SettingsValues sv;
+            if (ShowSettingsDialog(hwnd_, settings_ini_path_, sv)) {
+                if (heartbeat_) heartbeat_->SetTimings(sv.interval_ms, sv.timeout_ms);
+                current_theme_name_ = sv.theme_name;
+                MHX_LOG_INFO(L"Settings applied: interval=%lu timeout=%lu theme=%s",
+                             sv.interval_ms, sv.timeout_ms, sv.theme_name.c_str());
+            }
+            return 0;
+        }
 
         case ID_TAB_NEXT: {
             if (!tab_ctrl_) return 0;

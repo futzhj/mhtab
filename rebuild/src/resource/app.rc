@@ -63,6 +63,8 @@ BEGIN
         MENUITEM "新建 Tab(&N)\tCtrl+N",        ID_FILE_NEW
         MENUITEM "关闭当前 Tab(&W)\tCtrl+W",    ID_FILE_CLOSE_TAB
         MENUITEM SEPARATOR
+        MENUITEM "设置(&S)...",                  ID_FILE_SETTINGS
+        MENUITEM SEPARATOR
         MENUITEM "退出(&X)\tAlt+F4",            ID_FILE_EXIT
     END
     POPUP "标签(&T)"
@@ -98,6 +100,35 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "关闭 Tab(&W)\tCtrl+W",         ID_FILE_CLOSE_TAB
     END
+END
+
+/* ============================================================
+ * W6-3: 设置对话框
+ *
+ * 让用户编辑 mhtabx.ini 中的运行时参数。布局采用 DLU（dialog units），
+ * 字号 9 Segoe UI 时 1 DLU ≈ 1.5 px。
+ *
+ * Layout (DLU):
+ *   总尺寸 240 × 130
+ *   左标签列 10..90，右控件列 95..200
+ *   底部按钮 OK(120, 100), Cancel(170, 100)
+ * ============================================================ */
+IDD_SETTINGS DIALOGEX 0, 0, 240, 130
+STYLE   DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP |
+        WS_CAPTION | WS_SYSMENU
+EXSTYLE WS_EX_DLGMODALFRAME
+CAPTION "设置 - mhtabx"
+FONT 9, "Segoe UI", 400, 0, 0
+BEGIN
+    LTEXT      "心跳间隔 (ms):",   -1,                       10, 12, 80, 10
+    EDITTEXT                       IDC_SET_INTERVAL_EDIT,    95, 10, 60, 14, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT      "心跳超时 (ms):",   -1,                       10, 32, 80, 10
+    EDITTEXT                       IDC_SET_TIMEOUT_EDIT,     95, 30, 60, 14, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT      "主题:",            -1,                       10, 52, 80, 10
+    COMBOBOX                       IDC_SET_THEME_COMBO,      95, 50, 80, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT      "(主题切换在 W6-4 阶段生效)", -1,             10, 72, 200, 10
+    DEFPUSHBUTTON  "确定",         IDOK,                    120,100, 50, 14
+    PUSHBUTTON     "取消",         IDCANCEL,                175,100, 50, 14
 END
 
 /* ============================================================
