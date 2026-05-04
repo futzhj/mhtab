@@ -46,6 +46,7 @@ set(MHTABX_SOURCES
     src/ChildProcessManager.cpp
     src/HeartbeatMonitor.cpp
     src/SessionStore.cpp
+    src/Theme.cpp
     src/Utils.cpp
     src/resource/app.rc
 )

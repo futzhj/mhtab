@@ -18,6 +18,7 @@
 #include "resource/resource.h"
 
 #include <algorithm>
+#include <shellapi.h>   /* CommandLineToArgvW */
 
 namespace mhx {
 
@@ -167,6 +168,9 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
                                             reinterpret_cast<NMHDR*>(lp));
         case WM_COMMAND:   return OnCommand(LOWORD(wp), HIWORD(wp),
                                              reinterpret_cast<HWND>(lp));
+        case WM_DRAWITEM:  return tab_ctrl_
+                                ? tab_ctrl_->OnDrawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lp))
+                                : ::DefWindowProcW(hwnd_, msg, wp, lp);
         case WM_COPYDATA:  return OnCopyData(reinterpret_cast<HWND>(wp),
                                               reinterpret_cast<const COPYDATASTRUCT*>(lp));
 

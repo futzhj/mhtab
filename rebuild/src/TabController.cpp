@@ -16,7 +16,10 @@ constexpr UINT_PTR kTabSubclassId   = 0xCAFE0001;
 /* ============================================================
  * 构造 / 析构
  * ============================================================ */
-TabController::TabController() = default;
+TabController::TabController() {
+    /* 默认装上现代扁平主题，可通过 SetTheme 替换 */
+    theme_ = std::make_unique<FlatModernTheme>();
+}
 
 TabController::~TabController() {
     if (tab_ctrl_) {
@@ -38,9 +41,13 @@ bool TabController::Create(HWND parent, HINSTANCE hInst, const RECT& rc, int ctr
     parent_    = parent;
     hInstance_ = hInst;
 
+    /* TCS_OWNERDRAWFIXED 允许 SysTabControl32 将每个标签以 WM_DRAWITEM 发出 */
+    DWORD style = WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER;
+    if (theme_) style |= TCS_OWNERDRAWFIXED;
+
     tab_ctrl_ = ::CreateWindowExW(
         0, WC_TABCONTROLW, L"",
-        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER,
+        style,
         rc.left, rc.top,
         rc.right - rc.left, rc.bottom - rc.top,
         parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(ctrl_id)),
@@ -434,22 +441,39 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_MOUSEMOVE: {
-            if (!drag_armed_ || (wp & MK_LBUTTON) == 0) return 0;
             int x = GET_X_LPARAM(lp);
             int y = GET_Y_LPARAM(lp);
 
-            int dx = std::abs(x - drag_start_pt_.x);
-            int dy = std::abs(y - drag_start_pt_.y);
-
-            /* 超过系统拖拽阈值后进入拖拽模式 */
-            if (!drag_active_ && (dx > ::GetSystemMetrics(SM_CXDRAG) ||
-                                  dy > ::GetSystemMetrics(SM_CYDRAG))) {
-                drag_active_ = true;
-                ::SetCapture(tab_ctrl_);
+            /* --- Hot tracking：注册 WM_MOUSELEAVE 并刷新 hot tab --- */
+            if (!tracking_) {
+                TRACKMOUSEEVENT tme = {};
+                tme.cbSize    = sizeof(tme);
+                tme.dwFlags   = TME_LEAVE;
+                tme.hwndTrack = tab_ctrl_;
+                if (::TrackMouseEvent(&tme)) tracking_ = true;
+            }
+            int new_hot = HitTestTab(x, y);
+            if (new_hot != hot_idx_) {
+                RECT rc;
+                if (hot_idx_ >= 0 && TabCtrl_GetItemRect(tab_ctrl_, hot_idx_, &rc))
+                    ::InvalidateRect(tab_ctrl_, &rc, FALSE);
+                if (new_hot >= 0 && TabCtrl_GetItemRect(tab_ctrl_, new_hot, &rc))
+                    ::InvalidateRect(tab_ctrl_, &rc, FALSE);
+                hot_idx_ = new_hot;
             }
 
-            if (drag_active_) {
-                ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+            /* --- 拖拽阈值检测（仅在 LBUTTONDOWN 命中过 tab 后） --- */
+            if (drag_armed_ && (wp & MK_LBUTTON) != 0) {
+                int dx = std::abs(x - drag_start_pt_.x);
+                int dy = std::abs(y - drag_start_pt_.y);
+                if (!drag_active_ && (dx > ::GetSystemMetrics(SM_CXDRAG) ||
+                                      dy > ::GetSystemMetrics(SM_CYDRAG))) {
+                    drag_active_ = true;
+                    ::SetCapture(tab_ctrl_);
+                }
+                if (drag_active_) {
+                    ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+                }
             }
             return 0;
         }
@@ -475,8 +499,64 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
             drag_active_  = false;
             drag_src_idx_ = -1;
             return 0;
+
+        case WM_MOUSELEAVE: {
+            tracking_ = false;
+            if (hot_idx_ >= 0) {
+                RECT rc;
+                if (TabCtrl_GetItemRect(tab_ctrl_, hot_idx_, &rc))
+                    ::InvalidateRect(tab_ctrl_, &rc, FALSE);
+                hot_idx_ = -1;
+            }
+            return 0;
+        }
     }
     return 0;
+}
+
+/* ============================================================
+ * W4-3: SetTheme
+ *
+ * 替换主题后强制刷新 tab control 让新风格立即生效。
+ * 注意：TCS_OWNERDRAWFIXED 是创建时确定的，运行时切换主题
+ * 不会重新加这个样式（如需切换到默认皮肤需重建窗口，本接口够用）。
+ * ============================================================ */
+void TabController::SetTheme(std::unique_ptr<ITheme> theme) {
+    theme_ = std::move(theme);
+    if (tab_ctrl_) ::InvalidateRect(tab_ctrl_, nullptr, TRUE);
+}
+
+/* ============================================================
+ * W4-3: OnDrawItem - 由 MainFrame 路由的 WM_DRAWITEM
+ *
+ * SysTabControl32 在 TCS_OWNERDRAWFIXED 模式下，每个 tab 头需要绘制时
+ * 会向 parent 发送 WM_DRAWITEM。我们用这里的钩子委托给 ITheme。
+ * ============================================================ */
+LRESULT TabController::OnDrawItem(DRAWITEMSTRUCT* dis) {
+    if (!dis || dis->hwndItem != tab_ctrl_ || !theme_) return FALSE;
+
+    int tab_idx = static_cast<int>(dis->itemID);
+    if (tab_idx < 0) return FALSE;
+
+    /* 取 lParam 反查 slot */
+    TCITEMW item = {};
+    item.mask = TCIF_PARAM;
+    const ChildSlot* slot = nullptr;
+    if (TabCtrl_GetItem(tab_ctrl_, tab_idx, &item)) {
+        slot = FindSlot(static_cast<int>(item.lParam));
+    }
+
+    TabPaintContext ctx;
+    ctx.hdc         = dis->hDC;
+    ctx.rect        = dis->rcItem;
+    ctx.slot        = slot;
+    ctx.tab_index   = tab_idx;
+    ctx.is_selected = (TabCtrl_GetCurSel(tab_ctrl_) == tab_idx);
+    ctx.is_hot      = (hot_idx_ == tab_idx);
+    ctx.is_pushed   = (drag_armed_ && drag_src_idx_ == tab_idx);
+
+    theme_->DrawTab(ctx);
+    return TRUE;
 }
 
 } /* namespace mhx */
