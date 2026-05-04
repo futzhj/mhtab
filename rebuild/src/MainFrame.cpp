@@ -562,8 +562,24 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
             return 0;
         }
 
+        case ID_TAB_DETACH: {
+            /* W5-4: 把当前 Tab 分离为独立顶层窗口 */
+            if (!tab_ctrl_ || !child_mgr_) return 0;
+            int sid = tab_ctrl_->GetSelectedSlotId();
+            if (sid < 0) return 0;
+
+            /* 清理顺序：先解除 wait handle 跟踪，再移除 heartbeat slot，
+             * 最后 TabController::DetachSlot 清理 UI（会把 slot 置空）。 */
+            child_mgr_->DetachSlot(sid);
+            if (heartbeat_) heartbeat_->UnregisterSlot(sid);
+            tab_ctrl_->DetachSlot(sid);
+
+            ::InvalidateRect(hwnd_, nullptr, TRUE);
+            return 0;
+        }
+
         case ID_TAB_RENAME: {
-            /* \u7b80\u5355\u5b9e\u73b0\uff1a\u7ed9\u5f53\u524d Tab \u8ffd\u52a0\u4e00\u4e2a '*' \u540e\u7f00 */
+            /* 简单实现：给当前 Tab 追加一个 '*' 后缀 */
             if (!tab_ctrl_) return 0;
             int sid = tab_ctrl_->GetSelectedSlotId();
             auto* slot = tab_ctrl_->FindSlot(sid);

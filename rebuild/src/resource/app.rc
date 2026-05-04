@@ -71,6 +71,7 @@ BEGIN
         MENUITEM "上一个(&P)\tCtrl+Shift+Tab",   ID_TAB_PREV
         MENUITEM SEPARATOR
         MENUITEM "重命名(&R)\tF2",               ID_TAB_RENAME
+        MENUITEM "分离为独立窗口(&D)\tCtrl+D",    ID_TAB_DETACH
     END
     POPUP "帮助(&H)"
     BEGIN
@@ -91,4 +92,5 @@ BEGIN
     VK_TAB,     ID_TAB_NEXT,        VIRTKEY, CONTROL, NOINVERT
     VK_TAB,     ID_TAB_PREV,        VIRTKEY, CONTROL, SHIFT, NOINVERT
     VK_F2,      ID_TAB_RENAME,      VIRTKEY, NOINVERT
+    "D",        ID_TAB_DETACH,      VIRTKEY, CONTROL, NOINVERT
 END

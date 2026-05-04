@@ -69,6 +69,14 @@ public:
      */
     bool RequestClose(int slot_id, bool force = false);
 
+    /**
+     * W5-4: 放弃对子进程的 wait 跟踪（不终止子进程）。
+     * 主进程不再接收 Poll 退出事件，child 进程从此独立运行。
+     *
+     * 必须在 TabController::DetachSlot 清理 slot 之前调用。
+     */
+    bool DetachSlot(int slot_id);
+
     /** 返回当前活跃子进程数 */
     size_t GetActiveCount() const noexcept;
 

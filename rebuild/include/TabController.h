@@ -117,6 +117,16 @@ public:
     /** 把 src_idx 的 Tab 移到 dst_idx，更新所有 slot.tab_index */
     bool ReorderTabs(int src_idx, int dst_idx);
 
+    /**
+     * 把 slot 对应的 child 窗口从 Tab 容器中"分离"为独立顶层窗口。
+     * 相当于 RemoveSlot，但恢复 child 后会 ShowWindow(SW_SHOWNORMAL)
+     * 并移动到主窗口右下方可见位置。
+     *
+     * 调用方（MainFrame）必须先调用 ChildProcessManager::DetachSlot 解除
+     * 进程 wait handle 关系，再调这个接口清理 UI 状态。
+     */
+    bool DetachSlot(int slot_id);
+
     /** 处理 WM_DRAWITEM（由 MainFrame 路由）。成功返回 TRUE。 */
     LRESULT OnDrawItem(DRAWITEMSTRUCT* dis);
 

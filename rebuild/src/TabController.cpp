@@ -213,6 +213,68 @@ bool TabController::RemoveSlot(int slot_id) {
     return true;
 }
 
+/* ============================================================
+ * W5-4: DetachSlot
+ *
+ * 类似 RemoveSlot，但：
+ *   - 恢复 child 后调用 ShowWindow(SW_SHOWNORMAL) 而非 SW_HIDE
+ *   - 把 child 移到主窗口右下方一个可见位置
+ *   - 置为 foreground 让用户知道窗口"飞出来"了
+ * ============================================================ */
+bool TabController::DetachSlot(int slot_id) {
+    auto* slot = FindSlot(slot_id);
+    if (!slot) return false;
+
+    HWND     child       = slot->child_hwnd;
+    HWND     orig_parent = slot->orig_parent;     /* 通常为 nullptr（顶层） */
+    LONG_PTR orig_style  = slot->orig_style;
+    int      tab_index   = slot->tab_index;
+
+    if (!child || !::IsWindow(child)) {
+        MHX_LOG_WARN(L"DetachSlot: invalid child hwnd for slot %d", slot_id);
+        return false;
+    }
+
+    /* 1. 恢复独立顶层窗口 */
+    ::SetParent(child, orig_parent);
+    ::SetWindowLongPtrW(child, GWL_STYLE, orig_style);
+
+    /* 2. 从 Tab 移除（同 RemoveSlot 逻辑） */
+    if (tab_index >= 0 && tab_ctrl_) {
+        TabCtrl_DeleteItem(tab_ctrl_, tab_index);
+        for (auto& p : slots_) {
+            if (p && p.get() != slot && p->tab_index > tab_index) --p->tab_index;
+        }
+    }
+
+    /* 3. 清除 slot 在 slots_ 中的条目（避免析构时再 SetParent 回 orig_parent） */
+    slot->child_hwnd = nullptr;
+    slot->orig_parent = nullptr;
+    slots_[slot_id]->slot_id = -1;
+    slots_[slot_id]->state   = ChildState::Dead;
+    slots_[slot_id].reset();
+
+    /* 4. 定位独立窗口到主窗口右下偏移，保证可见 */
+    RECT main_rc = {};
+    if (parent_) ::GetWindowRect(parent_, &main_rc);
+    int x = main_rc.left + 60;
+    int y = main_rc.top  + 60;
+    ::SetWindowPos(child, nullptr, x, y, 800, 600,
+                   SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED);
+    ::SetForegroundWindow(child);
+
+    /* 5. 如果 detach 的是 selected slot，切到下一个有效 slot */
+    if (selected_slot_id_ == slot_id) {
+        selected_slot_id_ = -1;
+        for (auto& p : slots_) {
+            if (p && p->slot_id >= 0) { SelectSlot(p->slot_id); break; }
+        }
+    }
+
+    MHX_LOG_INFO(L"DetachSlot id=%d child=%p", slot_id, child);
+    return true;
+}
+
 void TabController::SelectSlot(int slot_id) {
     /* 隐藏其他所有子窗口 */
     for (auto& p : slots_) {

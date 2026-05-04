@@ -192,6 +192,26 @@ bool ChildProcessManager::RequestClose(int slot_id, bool force) {
 }
 
 /* ============================================================
+ * W5-4: DetachSlot
+ *
+ * 与 RequestClose 不同：不终止子进程，只从主进程的 wait 列表中
+ * 摘除 hProcess 并 CloseHandle。子进程此后独立运行，主进程放弃跟踪。
+ * ============================================================ */
+bool ChildProcessManager::DetachSlot(int slot_id) {
+    auto* slot = tab_ctrl_.FindSlot(slot_id);
+    if (!slot) return false;
+
+    if (slot->hProcess) {
+        RemoveWaitHandle(slot->hProcess);
+        ::CloseHandle(slot->hProcess);
+        slot->hProcess = nullptr;
+    }
+    MHX_LOG_INFO(L"DetachSlot: slot=%d pid=%lu (wait handle released)",
+                 slot_id, slot->pid);
+    return true;
+}
+
+/* ============================================================
  * 计数 / 数组维护
  * ============================================================ */
 size_t ChildProcessManager::GetActiveCount() const noexcept {

@@ -20,5 +20,6 @@
 #define ID_TAB_NEXT             40010
 #define ID_TAB_PREV             40011
 #define ID_TAB_RENAME           40012
+#define ID_TAB_DETACH           40013
 
 #define ID_HELP_ABOUT           40020
