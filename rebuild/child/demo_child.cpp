@@ -28,8 +28,11 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <cwchar>
 
 namespace {
 
