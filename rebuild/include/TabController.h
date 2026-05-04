@@ -105,6 +105,16 @@ public:
 
     HWND GetHwnd() const noexcept { return tab_ctrl_; }
 
+    /** 切换到下一个/上一个 Tab（按 tab_index 顺序） */
+    void SelectNext();
+    void SelectPrev();
+
+    /** 修改 slot 的 Tab 标题 */
+    bool RenameSlot(int slot_id, const String& new_title);
+
+    /** 把 src_idx 的 Tab 移到 dst_idx，更新所有 slot.tab_index */
+    bool ReorderTabs(int src_idx, int dst_idx);
+
     /** 遍历所有 slot（含已 Dead 的） */
     template <class F>
     void ForEachSlot(F&& fn) {
@@ -120,11 +130,26 @@ private:
     /** 计算 Tab 内容区（在 tab head 下方）相对父窗口的 RECT */
     RECT GetDisplayArea() const;
 
+    /* === 拖拽支持 === */
+    static LRESULT CALLBACK TabSubclassProc(
+        HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+        UINT_PTR id_subclass, DWORD_PTR ref_data);
+    LRESULT HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp);
+
+    /** 鼠标在哪个 Tab 上（-1 表示不在任何 Tab） */
+    int HitTestTab(int x, int y) const;
+
 private:
     HWND       tab_ctrl_         = nullptr;
     HWND       parent_           = nullptr;
     HINSTANCE  hInstance_        = nullptr;
     int        selected_slot_id_ = -1;
+
+    /* === 拖拽状态 === */
+    bool       drag_armed_   = false;     /* LBUTTONDOWN 命中 tab 但还未达阈值 */
+    bool       drag_active_  = false;     /* 已超过阈值，进入拖拽模式 */
+    int        drag_src_idx_ = -1;
+    POINT      drag_start_pt_{};
 
     /* slots_ 用 unique_ptr 避免移动 vector 时 ChildSlot 地址变化 */
     std::vector<std::unique_ptr<ChildSlot>> slots_;

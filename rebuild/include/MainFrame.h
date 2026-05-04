@@ -65,6 +65,7 @@ private:
     LRESULT OnCopyData(HWND from, const COPYDATASTRUCT* cds);
     LRESULT OnTimer(UINT_PTR id);
     LRESULT OnNotify(int ctrl_id, NMHDR* hdr);
+    LRESULT OnCommand(WORD id, WORD code, HWND ctrl);
 
     /* IPC 消息处理（子进程发来） */
     LRESULT OnNewClient(WPARAM slot_id, LPARAM child_hwnd);

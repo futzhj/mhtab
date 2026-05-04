@@ -5,9 +5,13 @@
 #include "TabController.h"
 #include "Utils.h"
 
+#include <commctrl.h>
+#pragma comment(lib, "comctl32")
+
 namespace mhx {
 
-constexpr int kTabHeaderHeight = 28;
+constexpr int      kTabHeaderHeight = 28;
+constexpr UINT_PTR kTabSubclassId   = 0xCAFE0001;
 
 /* ============================================================
  * 构造 / 析构
@@ -15,6 +19,9 @@ constexpr int kTabHeaderHeight = 28;
 TabController::TabController() = default;
 
 TabController::~TabController() {
+    if (tab_ctrl_) {
+        ::RemoveWindowSubclass(tab_ctrl_, &TabController::TabSubclassProc, kTabSubclassId);
+    }
     /* 析构时还原所有 child 窗口的 parent，避免 child 进程被牵连销毁 */
     for (auto& slot_ptr : slots_) {
         if (slot_ptr && slot_ptr->child_hwnd && slot_ptr->orig_parent) {
@@ -48,6 +55,11 @@ bool TabController::Create(HWND parent, HINSTANCE hInst, const RECT& rc, int ctr
     /* 启用主题字体 */
     HFONT font = reinterpret_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
     ::SendMessageW(tab_ctrl_, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+
+    /* 安装 subclass 拦截鼠标事件以支持 Tab 拖拽 */
+    ::SetWindowSubclass(tab_ctrl_, &TabController::TabSubclassProc,
+                        kTabSubclassId,
+                        reinterpret_cast<DWORD_PTR>(this));
 
     MHX_LOG_INFO(L"TabController created: hwnd=%p", tab_ctrl_);
     return true;
@@ -267,6 +279,204 @@ RECT TabController::GetDisplayArea() const {
     ::GetClientRect(tab_ctrl_, &rc);
     TabCtrl_AdjustRect(tab_ctrl_, FALSE, &rc);
     return rc;
+}
+
+/* ============================================================
+ * W4: 切换 Tab
+ * ============================================================ */
+void TabController::SelectNext() {
+    if (!tab_ctrl_) return;
+    int n = TabCtrl_GetItemCount(tab_ctrl_);
+    if (n <= 1) return;
+    int cur = TabCtrl_GetCurSel(tab_ctrl_);
+    int next_idx = (cur + 1) % n;
+
+    TCITEMW item = {};
+    item.mask = TCIF_PARAM;
+    if (TabCtrl_GetItem(tab_ctrl_, next_idx, &item)) {
+        SelectSlot(static_cast<int>(item.lParam));
+    }
+}
+
+void TabController::SelectPrev() {
+    if (!tab_ctrl_) return;
+    int n = TabCtrl_GetItemCount(tab_ctrl_);
+    if (n <= 1) return;
+    int cur = TabCtrl_GetCurSel(tab_ctrl_);
+    int prev_idx = (cur - 1 + n) % n;
+
+    TCITEMW item = {};
+    item.mask = TCIF_PARAM;
+    if (TabCtrl_GetItem(tab_ctrl_, prev_idx, &item)) {
+        SelectSlot(static_cast<int>(item.lParam));
+    }
+}
+
+/* ============================================================
+ * W4: 重命名
+ * ============================================================ */
+bool TabController::RenameSlot(int slot_id, const String& new_title) {
+    auto* slot = FindSlot(slot_id);
+    if (!slot || slot->tab_index < 0 || !tab_ctrl_) return false;
+
+    slot->title = new_title;
+    TCITEMW item = {};
+    item.mask    = TCIF_TEXT;
+    item.pszText = const_cast<LPWSTR>(slot->title.c_str());
+    BOOL ok = TabCtrl_SetItem(tab_ctrl_, slot->tab_index, &item);
+    return ok != FALSE;
+}
+
+/* ============================================================
+ * W4: Tab 重排
+ *
+ * 思路：保留当前 selected slot_id，把整个 tab 列表 DeleteAllItems，
+ * 按新顺序重新 InsertItem，更新所有 slot.tab_index，然后恢复 select。
+ * 这样实现简单且对任意 src/dst 都正确。
+ * ============================================================ */
+bool TabController::ReorderTabs(int src_idx, int dst_idx) {
+    if (!tab_ctrl_) return false;
+    int n = TabCtrl_GetItemCount(tab_ctrl_);
+    if (src_idx < 0 || src_idx >= n) return false;
+    if (dst_idx < 0 || dst_idx >= n) return false;
+    if (src_idx == dst_idx) return false;
+
+    /* 1. 收集当前顺序的 slot_id 数组 */
+    std::vector<int> order;
+    order.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        TCITEMW item = {};
+        item.mask = TCIF_PARAM;
+        if (TabCtrl_GetItem(tab_ctrl_, i, &item)) {
+            order.push_back(static_cast<int>(item.lParam));
+        }
+    }
+    if ((int)order.size() != n) return false;
+
+    /* 2. 在数组里挪动 */
+    int moved_slot = order[src_idx];
+    order.erase(order.begin() + src_idx);
+    order.insert(order.begin() + dst_idx, moved_slot);
+
+    /* 3. 记录当前 selected slot_id（重排后保持选中同一个 slot） */
+    int sel_slot = selected_slot_id_;
+
+    /* 4. 重建 tab 列表 */
+    TabCtrl_DeleteAllItems(tab_ctrl_);
+    for (int i = 0; i < (int)order.size(); ++i) {
+        auto* slot = FindSlot(order[i]);
+        if (!slot) continue;
+        TCITEMW item = {};
+        item.mask    = TCIF_TEXT | TCIF_PARAM;
+        item.pszText = const_cast<LPWSTR>(slot->title.c_str());
+        item.lParam  = slot->slot_id;
+        TabCtrl_InsertItem(tab_ctrl_, i, &item);
+        slot->tab_index = i;
+    }
+
+    /* 5. 恢复选中 */
+    if (sel_slot >= 0) SelectSlot(sel_slot);
+
+    MHX_LOG_INFO(L"ReorderTabs: src=%d dst=%d slot=%d",
+                 src_idx, dst_idx, moved_slot);
+    return true;
+}
+
+/* ============================================================
+ * W4: HitTest
+ * ============================================================ */
+int TabController::HitTestTab(int x, int y) const {
+    if (!tab_ctrl_) return -1;
+    TCHITTESTINFO info = {};
+    info.pt.x = x;
+    info.pt.y = y;
+    int idx = TabCtrl_HitTest(tab_ctrl_, &info);
+    return (idx >= 0) ? idx : -1;
+}
+
+/* ============================================================
+ * W4: Tab subclass thunk
+ * ============================================================ */
+LRESULT CALLBACK TabController::TabSubclassProc(
+    HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+    UINT_PTR /*id_subclass*/, DWORD_PTR ref_data) {
+
+    auto* self = reinterpret_cast<TabController*>(ref_data);
+    if (self) {
+        LRESULT r = self->HandleTabMessage(msg, wp, lp);
+        if (r != 0) return r;   /* 已处理 */
+    }
+    return ::DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+/* ============================================================
+ * W4: 拖拽消息处理
+ *
+ * 返回值约定：
+ *   - 0  → 调用方继续默认处理（DefSubclassProc）
+ *   - 非 0 → 已完全处理，跳过默认处理
+ * ============================================================ */
+LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_LBUTTONDOWN: {
+            int x = GET_X_LPARAM(lp);
+            int y = GET_Y_LPARAM(lp);
+            int idx = HitTestTab(x, y);
+            if (idx >= 0) {
+                drag_armed_   = true;
+                drag_active_  = false;
+                drag_src_idx_ = idx;
+                drag_start_pt_.x = x;
+                drag_start_pt_.y = y;
+                /* 让默认处理切换 selected tab */
+            }
+            return 0;
+        }
+
+        case WM_MOUSEMOVE: {
+            if (!drag_armed_ || (wp & MK_LBUTTON) == 0) return 0;
+            int x = GET_X_LPARAM(lp);
+            int y = GET_Y_LPARAM(lp);
+
+            int dx = std::abs(x - drag_start_pt_.x);
+            int dy = std::abs(y - drag_start_pt_.y);
+
+            /* 超过系统拖拽阈值后进入拖拽模式 */
+            if (!drag_active_ && (dx > ::GetSystemMetrics(SM_CXDRAG) ||
+                                  dy > ::GetSystemMetrics(SM_CYDRAG))) {
+                drag_active_ = true;
+                ::SetCapture(tab_ctrl_);
+            }
+
+            if (drag_active_) {
+                ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONUP: {
+            if (drag_active_) {
+                int x = GET_X_LPARAM(lp);
+                int y = GET_Y_LPARAM(lp);
+                int dst = HitTestTab(x, y);
+                if (dst >= 0 && dst != drag_src_idx_) {
+                    ReorderTabs(drag_src_idx_, dst);
+                }
+                ::ReleaseCapture();
+            }
+            drag_armed_   = false;
+            drag_active_  = false;
+            drag_src_idx_ = -1;
+            return 0;
+        }
+
+        case WM_CAPTURECHANGED:
+            drag_armed_   = false;
+            drag_active_  = false;
+            drag_src_idx_ = -1;
+            return 0;
+    }
+    return 0;
 }
 
 } /* namespace mhx */

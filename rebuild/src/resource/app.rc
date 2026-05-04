@@ -1,6 +1,11 @@
 #include <windows.h>
 #include "resource.h"
 
+/* RC 源文件按 UTF-8 解析（与编辑器保存编码一致），中文字符串正确编译 */
+#pragma code_page(65001)
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
 /* ============================================================
  * Version Info
  * ============================================================ */
@@ -47,3 +52,43 @@ END
  * Manifest (由 CMake /MANIFESTDEPENDENCY 链接器参数提供，
  * 不需要在此显式声明)
  * ============================================================ */
+
+/* ============================================================
+ * 主菜单
+ * ============================================================ */
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "文件(&F)"
+    BEGIN
+        MENUITEM "新建 Tab(&N)\tCtrl+N",        ID_FILE_NEW
+        MENUITEM "关闭当前 Tab(&W)\tCtrl+W",    ID_FILE_CLOSE_TAB
+        MENUITEM SEPARATOR
+        MENUITEM "退出(&X)\tAlt+F4",            ID_FILE_EXIT
+    END
+    POPUP "标签(&T)"
+    BEGIN
+        MENUITEM "下一个(&N)\tCtrl+Tab",         ID_TAB_NEXT
+        MENUITEM "上一个(&P)\tCtrl+Shift+Tab",   ID_TAB_PREV
+        MENUITEM SEPARATOR
+        MENUITEM "重命名(&R)\tF2",               ID_TAB_RENAME
+    END
+    POPUP "帮助(&H)"
+    BEGIN
+        MENUITEM "关于(&A)...",                  ID_HELP_ABOUT
+    END
+END
+
+/* ============================================================
+ * 加速键表
+ *
+ * NOINVERT 让菜单不会被加速键触发时反白闪一下
+ * VIRTKEY  对应 VK_* 虚拟键码
+ * ============================================================ */
+IDR_ACCELERATOR ACCELERATORS
+BEGIN
+    "N",        ID_FILE_NEW,        VIRTKEY, CONTROL, NOINVERT
+    "W",        ID_FILE_CLOSE_TAB,  VIRTKEY, CONTROL, NOINVERT
+    VK_TAB,     ID_TAB_NEXT,        VIRTKEY, CONTROL, NOINVERT
+    VK_TAB,     ID_TAB_PREV,        VIRTKEY, CONTROL, SHIFT, NOINVERT
+    VK_F2,      ID_TAB_RENAME,      VIRTKEY, NOINVERT
+END

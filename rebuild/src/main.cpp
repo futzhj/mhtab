@@ -11,6 +11,7 @@
 #include "MainFrame.h"
 #include "Utils.h"
 #include "common.h"
+#include "resource/resource.h"
 
 #include <shellapi.h>
 #include <commctrl.h>
@@ -105,10 +106,15 @@ static bool InitCommonCtrls() {
 
 /* ============================================================
  * 主消息循环
+ *
+ * 所有路径：
+ *   GetMessage → TranslateAccelerator → (未命中加速键时) TranslateMessage + DispatchMessage
  * ============================================================ */
-static int RunMessageLoop() {
+static int RunMessageLoop(HWND main_hwnd, HACCEL hAccel) {
     MSG msg = {};
     while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (hAccel && ::TranslateAcceleratorW(main_hwnd, hAccel, &msg))
+            continue;
         ::TranslateMessage(&msg);
         ::DispatchMessageW(&msg);
     }
@@ -176,8 +182,12 @@ static int AppMain(HINSTANCE hInstance, int nShowCmd) {
     }
     frame.Show(nShowCmd);
 
+    /* === 加载加速键 === */
+    HACCEL hAccel = ::LoadAcceleratorsW(hInstance, MAKEINTRESOURCEW(IDR_ACCELERATOR));
+    if (!hAccel) MHX_LOG_WARN(L"LoadAccelerators failed; 加速键不可用");
+
     /* === 消息循环 === */
-    int exit_code = RunMessageLoop();
+    int exit_code = RunMessageLoop(frame.GetHwnd(), hAccel);
     MHX_LOG_INFO(L"main exit: %d", exit_code);
     return exit_code;
 }

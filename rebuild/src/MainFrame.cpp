@@ -14,6 +14,7 @@
 #include "HeartbeatMonitor.h"
 #include "IpcProtocol.h"
 #include "Utils.h"
+#include "resource/resource.h"
 
 namespace mhx {
 
@@ -49,6 +50,7 @@ bool MainFrame::RegisterWindowClass(HINSTANCE hInstance, const String& class_nam
     wc.hCursor       = ::LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = class_name.c_str();
+    wc.lpszMenuName  = MAKEINTRESOURCEW(IDR_MAINMENU);
     wc.hIcon         = ::LoadIcon(nullptr, IDI_APPLICATION);
     wc.hIconSm       = ::LoadIcon(nullptr, IDI_APPLICATION);
 
@@ -158,6 +160,8 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TIMER:     return OnTimer(static_cast<UINT_PTR>(wp));
         case WM_NOTIFY:    return OnNotify(static_cast<int>(wp),
                                             reinterpret_cast<NMHDR*>(lp));
+        case WM_COMMAND:   return OnCommand(LOWORD(wp), HIWORD(wp),
+                                             reinterpret_cast<HWND>(lp));
         case WM_COPYDATA:  return OnCopyData(reinterpret_cast<HWND>(wp),
                                               reinterpret_cast<const COPYDATASTRUCT*>(lp));
 
@@ -180,8 +184,7 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
             break;
         case WM_KEYUP:
         case WM_CHAR:
-        case WM_SYSKEYDOWN:
-        case WM_SYSKEYUP:
+            /* 不转发 SYSKEYDOWN/UP，避免破坏 Alt+菜单访问键 */
             if (ForwardKeyToActiveChild(msg, wp, lp)) return 0;
             break;
     }
@@ -385,6 +388,88 @@ bool MainFrame::ForwardKeyToActiveChild(UINT msg, WPARAM wp, LPARAM lp) {
 
     ipc::SendForwardInput(slot->child_hwnd, msg, wp, lp);
     return true;
+}
+
+/* ============================================================
+ * Tab \u5207\u6362\u540e\u540c\u6b65 ACTIVATE/HIDE \u7ed9\u5b50\u8fdb\u7a0b
+ *
+ * \u4ec5\u5728 prev != curr \u65f6\u5dee\u5f02\u53d1\u9001\uff0c\u907f\u514d\u91cd\u590d ACTIVATE \u5e72\u6270\u5b50\u8fdb\u7a0b\u72b6\u6001\u3002
+ * ============================================================ */
+static void SyncActivateHide(TabController& tab_ctrl, int prev_slot, int curr_slot) {
+    if (prev_slot == curr_slot) return;
+    if (auto* p = tab_ctrl.FindSlot(prev_slot)) {
+        if (p->child_hwnd && ::IsWindow(p->child_hwnd))
+            ipc::PostHideView(p->child_hwnd, prev_slot);
+    }
+    if (auto* c = tab_ctrl.FindSlot(curr_slot)) {
+        if (c->child_hwnd && ::IsWindow(c->child_hwnd))
+            ipc::PostActivateView(c->child_hwnd, curr_slot);
+    }
+}
+
+/* ============================================================
+ * OnCommand - \u83dc\u5355 / \u52a0\u901f\u952e\u547d\u4ee4
+ * ============================================================ */
+LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
+    switch (id) {
+        case ID_FILE_NEW:
+            LaunchDemoChild();
+            return 0;
+
+        case ID_FILE_CLOSE_TAB: {
+            if (!tab_ctrl_ || !child_mgr_) return 0;
+            int sid = tab_ctrl_->GetSelectedSlotId();
+            if (sid >= 0) {
+                child_mgr_->RequestClose(sid, /*force=*/false);
+            }
+            return 0;
+        }
+
+        case ID_FILE_EXIT:
+            ::PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+            return 0;
+
+        case ID_TAB_NEXT: {
+            if (!tab_ctrl_) return 0;
+            int prev = tab_ctrl_->GetSelectedSlotId();
+            tab_ctrl_->SelectNext();
+            int curr = tab_ctrl_->GetSelectedSlotId();
+            SyncActivateHide(*tab_ctrl_, prev, curr);
+            return 0;
+        }
+
+        case ID_TAB_PREV: {
+            if (!tab_ctrl_) return 0;
+            int prev = tab_ctrl_->GetSelectedSlotId();
+            tab_ctrl_->SelectPrev();
+            int curr = tab_ctrl_->GetSelectedSlotId();
+            SyncActivateHide(*tab_ctrl_, prev, curr);
+            return 0;
+        }
+
+        case ID_TAB_RENAME: {
+            /* \u7b80\u5355\u5b9e\u73b0\uff1a\u7ed9\u5f53\u524d Tab \u8ffd\u52a0\u4e00\u4e2a '*' \u540e\u7f00 */
+            if (!tab_ctrl_) return 0;
+            int sid = tab_ctrl_->GetSelectedSlotId();
+            auto* slot = tab_ctrl_->FindSlot(sid);
+            if (slot) {
+                String new_title = slot->title + L" *";
+                tab_ctrl_->RenameSlot(sid, new_title);
+            }
+            return 0;
+        }
+
+        case ID_HELP_ABOUT:
+            ::MessageBoxW(hwnd_,
+                L"mhtabx - \u591a\u8fdb\u7a0b Tab \u5bb9\u5668\n"
+                L"\n"
+                L"mhtab.exe \u5f00\u6e90\u590d\u523b\uff08W1-W4 \u9636\u6bb5\uff09\n"
+                L"\n"
+                L"\u6e90\u4ee3\u7801\uff1ahttps://github.com/futzhj/mhtab",
+                L"\u5173\u4e8e mhtabx", MB_ICONINFORMATION);
+            return 0;
+    }
+    return 0;
 }
 
 /* ============================================================
