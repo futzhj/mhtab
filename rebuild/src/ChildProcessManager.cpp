@@ -67,6 +67,7 @@ int ChildProcessManager::LaunchChild(const String& exe_path,
     ChildSlot slot;
     slot.title    = title.empty() ? utils::Format(L"Tab %zu", tab_ctrl_.GetActiveCount() + 1)
                                    : title;
+    slot.exe_path = exe_path;
     slot.cmdline  = user_args;
     slot.state    = ChildState::Starting;
     int slot_id   = tab_ctrl_.AddSlot(std::move(slot));

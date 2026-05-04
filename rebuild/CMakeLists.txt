@@ -45,6 +45,7 @@ set(MHTABX_SOURCES
     src/TabController.cpp
     src/ChildProcessManager.cpp
     src/HeartbeatMonitor.cpp
+    src/SessionStore.cpp
     src/Utils.cpp
     src/resource/app.rc
 )

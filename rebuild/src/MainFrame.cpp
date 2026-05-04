@@ -12,15 +12,19 @@
 #include "TabController.h"
 #include "ChildProcessManager.h"
 #include "HeartbeatMonitor.h"
+#include "SessionStore.h"
 #include "IpcProtocol.h"
 #include "Utils.h"
 #include "resource/resource.h"
 
+#include <algorithm>
+
 namespace mhx {
 
-constexpr UINT_PTR kPollTimerId  = 1;
-constexpr UINT     kPollPeriodMs = 100;
-constexpr int      kTabCtrlId    = 0x1001;
+constexpr UINT_PTR kPollTimerId   = 1;
+constexpr UINT     kPollPeriodMs  = 100;
+constexpr int      kTabCtrlId     = 0x1001;
+constexpr UINT     kMsgPostInit   = WM_USER + 1001;  /* OnPostInit 触发消息 */
 
 /* ============================================================
  * 构造 / 析构
@@ -28,10 +32,11 @@ constexpr int      kTabCtrlId    = 0x1001;
 MainFrame::MainFrame() = default;
 
 MainFrame::~MainFrame() {
-    /* 析构顺序: heartbeat_ → child_mgr_ → tab_ctrl_ */
+    /* 析构顺序: heartbeat_ → child_mgr_ → tab_ctrl_ → session_store_ */
     heartbeat_.reset();
     child_mgr_.reset();
     tab_ctrl_.reset();
+    session_store_.reset();
     if (hwnd_ && ::IsWindow(hwnd_)) {
         ::DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -177,6 +182,10 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case MHX_CLEANUP_VIEW:  return OnCleanupView(wp, lp);
         case MHX_HEARTBEAT:     return TRUE;   /* 子进程发的兼容情况 */
 
+        case kMsgPostInit:
+            OnPostInit();
+            return 0;
+
         /* 调试: F5 启动 demo_child；其余键盘事件转发 */
         case WM_KEYDOWN:
             if (wp == VK_F5) { LaunchDemoChild(); return 0; }
@@ -210,11 +219,14 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
 
     heartbeat_ = std::make_unique<HeartbeatMonitor>(*tab_ctrl_, *child_mgr_);
 
+    /* W4: SessionStore - ini 路径为 <exe_dir>\mhtabx.ini */
+    session_store_ = std::make_unique<SessionStore>(
+        utils::GetExecutableDirectory() + L"mhtabx.ini");
+
     ::SetTimer(hwnd_, kPollTimerId, kPollPeriodMs, nullptr);
 
-    if (!pending_cmd_line_.empty()) {
-        ::PostMessageW(hwnd_, WM_USER + 999, 0, 0);
-    }
+    /* 延迟触发 OnPostInit，让主窗口先显示出来 */
+    ::PostMessageW(hwnd_, kMsgPostInit, 0, 0);
     return 0;
 }
 
@@ -222,9 +234,14 @@ LRESULT MainFrame::OnDestroy() {
     MHX_LOG_TRACE(L"OnDestroy");
     ::KillTimer(hwnd_, kPollTimerId);
 
+    /* W4: 在 tab_ctrl_/child_mgr_ 销毁前保存 session，
+     * SaveSession 内部会读这些对象。 */
+    SaveSession();
+
     heartbeat_.reset();
     child_mgr_.reset();
     tab_ctrl_.reset();
+    session_store_.reset();
 
     ::PostQuitMessage(0);
     return 0;
@@ -470,6 +487,96 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
             return 0;
     }
     return 0;
+}
+
+/* ============================================================
+ * W4: OnPostInit
+ *
+ * 在主窗口创建完成后由 PostMessage 触发，处理两种情况：
+ *   - pending_cmd_line_ 非空 → 启动指定程序
+ *   - 否则 → 从 SessionStore 恢复上次的 Tab 列表
+ *
+ * 注意：CommandLineToArgvW 要求传入的字符串符合 Win32 命令行语法，
+ * 第一个 token 视为 exe，剩余为 args。
+ * ============================================================ */
+void MainFrame::OnPostInit() {
+    if (!child_mgr_) return;
+
+    /* 1. 命令行优先 */
+    if (!pending_cmd_line_.empty()) {
+        int argc = 0;
+        LPWSTR* argv = ::CommandLineToArgvW(pending_cmd_line_.c_str(), &argc);
+        if (argv && argc >= 1) {
+            String exe = argv[0];
+            String args;
+            for (int i = 1; i < argc; ++i) {
+                if (!args.empty()) args.push_back(L' ');
+                /* 简单还原：含空格的参数补回引号 */
+                bool has_space = wcschr(argv[i], L' ') != nullptr;
+                if (has_space) args.push_back(L'"');
+                args += argv[i];
+                if (has_space) args.push_back(L'"');
+            }
+            ::LocalFree(argv);
+            child_mgr_->LaunchChild(exe, args, L"");
+            pending_cmd_line_.clear();
+        } else if (argv) {
+            ::LocalFree(argv);
+        }
+        return;
+    }
+
+    /* 2. 否则恢复 session */
+    if (!session_store_) return;
+    auto entries = session_store_->Load();
+    if (entries.empty()) {
+        MHX_LOG_INFO(L"OnPostInit: no session to restore");
+        return;
+    }
+
+    int restored = 0;
+    for (const auto& e : entries) {
+        if (::GetFileAttributesW(e.exe_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            MHX_LOG_WARN(L"Skip missing exe: %s", e.exe_path.c_str());
+            continue;
+        }
+        if (child_mgr_->LaunchChild(e.exe_path, e.args, e.title) >= 0) {
+            ++restored;
+        }
+    }
+    MHX_LOG_INFO(L"OnPostInit: restored %d/%zu tabs", restored, entries.size());
+}
+
+/* ============================================================
+ * W4: SaveSession
+ *
+ * 遍历所有 active slot，按 tab_index 顺序写入 ini。
+ * 会过滤 Dead 状态以及没有 exe_path 的 slot（避免存进无效条目）。
+ * ============================================================ */
+void MainFrame::SaveSession() {
+    if (!session_store_ || !tab_ctrl_) return;
+
+    /* 1. 收集 (tab_index, entry) 对 */
+    std::vector<std::pair<int, SessionEntry>> indexed;
+    tab_ctrl_->ForEachSlot([&](ChildSlot& slot) {
+        if (slot.state == ChildState::Dead) return;
+        if (slot.exe_path.empty()) return;
+        SessionEntry e;
+        e.exe_path = slot.exe_path;
+        e.args     = slot.cmdline;
+        e.title    = slot.title;
+        indexed.emplace_back(slot.tab_index, std::move(e));
+    });
+
+    /* 2. 按 tab_index 排序，使保存顺序与 UI 显示一致 */
+    std::sort(indexed.begin(), indexed.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::vector<SessionEntry> entries;
+    entries.reserve(indexed.size());
+    for (auto& p : indexed) entries.push_back(std::move(p.second));
+
+    session_store_->Save(entries);
 }
 
 /* ============================================================

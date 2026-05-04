@@ -13,6 +13,7 @@ namespace mhx {
 class TabController;
 class ChildProcessManager;
 class HeartbeatMonitor;
+class SessionStore;
 
 class MainFrame {
 public:
@@ -77,6 +78,12 @@ private:
     /* 键盘输入转发到当前 active 子窗口 */
     bool ForwardKeyToActiveChild(UINT msg, WPARAM wp, LPARAM lp);
 
+    /* 启动后延迟初始化：处理命令行 或 恢复上次 session */
+    void OnPostInit();
+
+    /* 退出前保存当前 Tab 列表 */
+    void SaveSession();
+
     /** 启动一个示例子进程（demo_child.exe），用于 W2 集成测试 */
     void LaunchDemoChild();
 
@@ -93,6 +100,9 @@ private:
 
     /* W3: 心跳监控 */
     std::unique_ptr<HeartbeatMonitor>    heartbeat_;
+
+    /* W4: Session 持久化 */
+    std::unique_ptr<SessionStore>        session_store_;
 };
 
 } /* namespace mhx */

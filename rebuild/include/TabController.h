@@ -28,7 +28,8 @@ struct ChildSlot {
     int          tab_index    = -1;          /* 在 SysTabControl32 中的 index */
     ChildState   state        = ChildState::Starting;
     String       title;                       /* Tab 显示标题 */
-    String       cmdline;                     /* 启动参数（用于 reload） */
+    String       exe_path;                    /* 子进程可执行文件路径 */
+    String       cmdline;                     /* 启动参数（不含 exe，不含 --mhx-* 注入参数） */
 
     /* 不允许拷贝，避免 hProcess 重复关闭 */
     ChildSlot() = default;
