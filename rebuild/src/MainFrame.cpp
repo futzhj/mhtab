@@ -171,6 +171,8 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_DRAWITEM:  return tab_ctrl_
                                 ? tab_ctrl_->OnDrawItem(reinterpret_cast<DRAWITEMSTRUCT*>(lp))
                                 : ::DefWindowProcW(hwnd_, msg, wp, lp);
+        case WM_DPICHANGED: return OnDpiChanged(LOWORD(wp),
+                                                 reinterpret_cast<const RECT*>(lp));
         case WM_COPYDATA:  return OnCopyData(reinterpret_cast<HWND>(wp),
                                               reinterpret_cast<const COPYDATASTRUCT*>(lp));
 
@@ -238,9 +240,9 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUS_BAR)),
         hInstance_, nullptr);
     if (status_bar_) {
-        int parts[3] = { 160, 560, -1 };
-        ::SendMessageW(status_bar_, SB_SETPARTS, 3,
-                       reinterpret_cast<LPARAM>(parts));
+        /* 记录窗口 DPI 并按比例设置 parts */
+        current_dpi_ = utils::GetDpiForHwnd(hwnd_);
+        SetStatusBarPartsForDpi(current_dpi_);
         HFONT font = reinterpret_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
         ::SendMessageW(status_bar_, WM_SETFONT,
                        reinterpret_cast<WPARAM>(font), TRUE);
@@ -582,6 +584,54 @@ void MainFrame::OnPostInit() {
         }
     }
     MHX_LOG_INFO(L"OnPostInit: restored %d/%zu tabs", restored, entries.size());
+}
+
+/* ============================================================
+ * W5-1/W5-2: SetStatusBarPartsForDpi
+ *
+ * 基础分区宽度按 96 DPI 设计：160 / 400 / 剩余
+ * 按当前 DPI 用 MulDiv 缩放，保证在 125/150/200% 下视觉一致。
+ * ============================================================ */
+void MainFrame::SetStatusBarPartsForDpi(UINT dpi) {
+    if (!status_bar_) return;
+    int p0 = ::MulDiv(160, static_cast<int>(dpi), 96);
+    int p1 = ::MulDiv(560, static_cast<int>(dpi), 96);
+    int parts[3] = { p0, p1, -1 };
+    ::SendMessageW(status_bar_, SB_SETPARTS, 3,
+                   reinterpret_cast<LPARAM>(parts));
+}
+
+/* ============================================================
+ * W5-2: OnDpiChanged
+ *
+ * 窗口从一个显示器拖到另一个 DPI 不同的显示器时，Windows 会发送
+ * 此消息并在 lParam 里给出建议的新窗口 RECT。我们必须：
+ *   1. SetWindowPos 到建议 RECT（尺寸已按新 DPI 预放大/缩小）
+ *   2. 记录新的 DPI 给 UI 元素后续使用
+ *   3. 重算像素尺寸相关 UI（如 StatusBar parts）
+ *
+ * 返回 0 表示已处理。
+ * ============================================================ */
+LRESULT MainFrame::OnDpiChanged(UINT new_dpi, const RECT* suggested) {
+    MHX_LOG_INFO(L"WM_DPICHANGED: %u -> %u", current_dpi_, new_dpi);
+    current_dpi_ = new_dpi ? new_dpi : 96;
+
+    if (suggested) {
+        ::SetWindowPos(hwnd_, nullptr,
+                       suggested->left, suggested->top,
+                       suggested->right  - suggested->left,
+                       suggested->bottom - suggested->top,
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    /* StatusBar parts 按新 DPI 重算 */
+    SetStatusBarPartsForDpi(current_dpi_);
+
+    /* 主题重绘 TabController 的 owner-draw 部分 */
+    if (tab_ctrl_ && tab_ctrl_->GetHwnd()) {
+        ::InvalidateRect(tab_ctrl_->GetHwnd(), nullptr, TRUE);
+    }
+    return 0;
 }
 
 /* ============================================================

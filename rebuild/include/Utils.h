@@ -80,4 +80,24 @@ bool WriteIniInt(const String& ini_path, const wchar_t* section,
 /* 把 GetLastError() 的错误码翻译成本地化字符串 */
 String FormatSystemError(DWORD code);
 
+/* ============================================================
+ * DPI（W5-2）
+ * ============================================================ */
+
+/**
+ * 进程级 DPI 感知设置：按 Win 版本自动降级
+ *   Win10 1703+  PER_MONITOR_AWARE_V2
+ *   Win10 1607   PER_MONITOR_AWARE
+ *   Win8.1       PROCESS_PER_MONITOR_DPI_AWARE（shcore.dll）
+ *   Vista+       SetProcessDPIAware
+ *
+ * 必须在创建任何 HWND 之前调用（否则后续 GetDpiForWindow 拿到旧值）。
+ */
+void SetupDpiAwareness();
+
+/**
+ * 获取某窗口的 DPI。Win10 1607 以下降级为系统 DPI。
+ */
+UINT GetDpiForHwnd(HWND hwnd);
+
 } /* namespace mhx::utils */

@@ -87,6 +87,12 @@ private:
     /* W5-1: 刷新状态栏 3 个分区的文本 */
     void UpdateStatusBar();
 
+    /* W5-1/W5-2: 按当前 DPI 设置状态栏分区的像素边界 */
+    void SetStatusBarPartsForDpi(UINT dpi);
+
+    /* W5-2: 处理 WM_DPICHANGED（窗口被移到不同 DPI 显示器时） */
+    LRESULT OnDpiChanged(UINT new_dpi, const RECT* suggested);
+
     /** 启动一个示例子进程（demo_child.exe），用于 W2 集成测试 */
     void LaunchDemoChild();
 
@@ -109,6 +115,9 @@ private:
 
     /* W5-1: 状态栏 */
     HWND status_bar_ = nullptr;
+
+    /* W5-2: 当前窗口 DPI（用于按比例缩放 UI 元素） */
+    UINT current_dpi_ = 96;
 };
 
 } /* namespace mhx */

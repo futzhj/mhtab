@@ -231,4 +231,67 @@ String FormatSystemError(DWORD code) {
                   out.empty() ? L"Unknown error" : out.c_str(), code);
 }
 
+/* ============================================================
+ * DPI 感知
+ *
+ * 按 Win 版本从高到低尝试，成功即退出。成功设置后，后续窗口创建
+ * 和 GetSystemMetrics 等 API 会返回按当前显示器 DPI 缩放后的值。
+ * ============================================================ */
+void SetupDpiAwareness() {
+    HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        /* Win10 1607+ : SetProcessDpiAwarenessContext(ctx) */
+        using FnSetCtx = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto fn = reinterpret_cast<FnSetCtx>(
+            ::GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (fn) {
+            /* -4 = PER_MONITOR_AWARE_V2 (Win10 1703+) */
+            if (fn(reinterpret_cast<DPI_AWARENESS_CONTEXT>(static_cast<intptr_t>(-4)))) return;
+            /* -3 = PER_MONITOR_AWARE  (Win10 1607) */
+            if (fn(reinterpret_cast<DPI_AWARENESS_CONTEXT>(static_cast<intptr_t>(-3)))) return;
+        }
+    }
+
+    /* Win8.1 : SetProcessDpiAwareness(process_dpi_awareness) */
+    HMODULE shcore = ::LoadLibraryW(L"shcore.dll");
+    if (shcore) {
+        using FnSetAwareness = HRESULT(WINAPI*)(int);
+        auto fn = reinterpret_cast<FnSetAwareness>(
+            ::GetProcAddress(shcore, "SetProcessDpiAwareness"));
+        HRESULT hr = E_NOTIMPL;
+        if (fn) hr = fn(2);   /* 2 = PROCESS_PER_MONITOR_DPI_AWARE */
+        ::FreeLibrary(shcore);
+        if (SUCCEEDED(hr)) return;
+    }
+
+    /* Vista+ : SetProcessDPIAware() - system DPI only */
+    if (user32) {
+        using FnDpiAware = BOOL(WINAPI*)();
+        auto fn = reinterpret_cast<FnDpiAware>(
+            ::GetProcAddress(user32, "SetProcessDPIAware"));
+        if (fn) fn();
+    }
+}
+
+UINT GetDpiForHwnd(HWND hwnd) {
+    HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        using FnGetDpi = UINT(WINAPI*)(HWND);
+        auto fn = reinterpret_cast<FnGetDpi>(
+            ::GetProcAddress(user32, "GetDpiForWindow"));
+        if (fn && hwnd) {
+            UINT dpi = fn(hwnd);
+            if (dpi) return dpi;
+        }
+    }
+    /* 降级：取桌面 DC 的 LOGPIXELSX */
+    HDC dc = ::GetDC(nullptr);
+    UINT dpi = 96;
+    if (dc) {
+        dpi = ::GetDeviceCaps(dc, LOGPIXELSX);
+        ::ReleaseDC(nullptr, dc);
+    }
+    return dpi ? dpi : 96;
+}
+
 } /* namespace mhx::utils */

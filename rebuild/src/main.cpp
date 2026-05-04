@@ -125,6 +125,10 @@ static int RunMessageLoop(HWND main_hwnd, HACCEL hAccel) {
  * AppMain
  * ============================================================ */
 static int AppMain(HINSTANCE hInstance, int nShowCmd) {
+    /* W5-2: 必须在任何 HWND 之前设置 DPI 感知，否则 Common Controls
+     *        会以 system DPI 初始化，切换显示器时表现会变形。 */
+    utils::SetupDpiAwareness();
+
     if (!InitCommonCtrls()) {
         MHX_LOG_ERROR(L"InitCommonControlsEx failed");
         return 1;
