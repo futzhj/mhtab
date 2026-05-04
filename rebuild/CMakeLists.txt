@@ -26,6 +26,21 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     # 启用 __cplusplus 正确值
     add_compile_options(/Zc:__cplusplus)
+
+    # -------- 中文字符串正确性 --------
+    # MSVC 默认按系统 ANSI code page 解析无 BOM 源码，会把 UTF-8
+    # 字节错误地当 Latin-1/GBK 解释 → L"中文" 字面量编码错误 → UI 乱码。
+    #
+    # /utf-8 = /source-charset:utf-8 /execution-charset:utf-8
+    # 明确告诉 cl.exe 源码是 UTF-8，执行字符集也是 UTF-8（对宽字符
+    # 字面量而言意味着 UTF-8 解码后 UTF-16 输出，这正是 Win32 W API 需要的）。
+    add_compile_options(/utf-8)
+
+    # rc.exe 独立的一套命令行。虽然 app.rc 已有 #pragma code_page(65001)，
+    # 但 rc.exe 对无 BOM 的 UTF-8 源文件在某些版本行为不一致，
+    # 显式传 /c65001 保证 code page 一致。
+    # 注意：空格分隔追加，避免破坏 CMake 原生的 /nologo 等默认参数。
+    string(APPEND CMAKE_RC_FLAGS " /c65001")
 endif()
 
 # Windows 版本目标 Win10 RS1 (1607)
