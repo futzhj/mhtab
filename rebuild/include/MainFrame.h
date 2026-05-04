@@ -84,6 +84,9 @@ private:
     /* 退出前保存当前 Tab 列表 */
     void SaveSession();
 
+    /* W5-1: 刷新状态栏 3 个分区的文本 */
+    void UpdateStatusBar();
+
     /** 启动一个示例子进程（demo_child.exe），用于 W2 集成测试 */
     void LaunchDemoChild();
 
@@ -103,6 +106,9 @@ private:
 
     /* W4: Session 持久化 */
     std::unique_ptr<SessionStore>        session_store_;
+
+    /* W5-1: 状态栏 */
+    HWND status_bar_ = nullptr;
 };
 
 } /* namespace mhx */

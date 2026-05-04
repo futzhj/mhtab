@@ -227,6 +227,28 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
     session_store_ = std::make_unique<SessionStore>(
         utils::GetExecutableDirectory() + L"mhtabx.ini");
 
+    /* W5-1: 状态栏 - 3 个分区:
+     *   [0] Tab 总数    ~160px
+     *   [1] 当前 slot+PID+State  ~400px
+     *   [2] 心跳 idle  剩余  */
+    status_bar_ = ::CreateWindowExW(
+        0, STATUSCLASSNAMEW, L"",
+        WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+        0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUS_BAR)),
+        hInstance_, nullptr);
+    if (status_bar_) {
+        int parts[3] = { 160, 560, -1 };
+        ::SendMessageW(status_bar_, SB_SETPARTS, 3,
+                       reinterpret_cast<LPARAM>(parts));
+        HFONT font = reinterpret_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
+        ::SendMessageW(status_bar_, WM_SETFONT,
+                       reinterpret_cast<WPARAM>(font), TRUE);
+    } else {
+        MHX_LOG_WARN(L"CreateWindowExW(STATUSCLASSNAMEW) failed: %s",
+                     utils::FormatSystemError(::GetLastError()).c_str());
+    }
+
     ::SetTimer(hwnd_, kPollTimerId, kPollPeriodMs, nullptr);
 
     /* 延迟触发 OnPostInit，让主窗口先显示出来 */
@@ -273,7 +295,16 @@ LRESULT MainFrame::OnPaint() {
 }
 
 LRESULT MainFrame::OnSize(int cx, int cy) {
-    if (tab_ctrl_) tab_ctrl_->Resize(cx, cy);
+    /* StatusBar 先自动贴底并重排分区 */
+    int sb_h = 0;
+    if (status_bar_) {
+        ::SendMessageW(status_bar_, WM_SIZE, 0, 0);
+        RECT sb_rc = {};
+        ::GetWindowRect(status_bar_, &sb_rc);
+        sb_h = sb_rc.bottom - sb_rc.top;
+    }
+    /* 剩余空间给 TabController */
+    if (tab_ctrl_) tab_ctrl_->Resize(cx, std::max(0, cy - sb_h));
     return 0;
 }
 
@@ -292,6 +323,8 @@ LRESULT MainFrame::OnTimer(UINT_PTR id) {
     /* 2. 心跳轮询 */
     if (heartbeat_) heartbeat_->Tick();
 
+    /* 3. 刷新状态栏 */
+    UpdateStatusBar();
     return 0;
 }
 
@@ -549,6 +582,58 @@ void MainFrame::OnPostInit() {
         }
     }
     MHX_LOG_INFO(L"OnPostInit: restored %d/%zu tabs", restored, entries.size());
+}
+
+/* ============================================================
+ * W5-1: UpdateStatusBar
+ *
+ * 从 OnTimer 每 100ms 调一次。3 个分区：
+ *   Part 0: "Tabs: N/32"
+ *   Part 1: "[Slot X] PID Y  Starting|Running|Dead"
+ *   Part 2: "Idle: Zms"  或  "Heartbeat: --"
+ *
+ * SB_SETTEXT 内部会去重：相同文本不会重绘，所以高频调用成本很低。
+ * ============================================================ */
+void MainFrame::UpdateStatusBar() {
+    if (!status_bar_ || !tab_ctrl_) return;
+
+    /* Part 0: Tab 数 / 上限 */
+    {
+        int max_n = child_mgr_ ? child_mgr_->GetMaxChildren() : 0;
+        String s = utils::Format(L"Tabs: %zu / %d",
+                                  tab_ctrl_->GetActiveCount(), max_n);
+        ::SendMessageW(status_bar_, SB_SETTEXTW, 0,
+                       reinterpret_cast<LPARAM>(s.c_str()));
+    }
+
+    /* Part 1/2 依赖当前 selected slot */
+    int sid = tab_ctrl_->GetSelectedSlotId();
+    auto* slot = tab_ctrl_->FindSlot(sid);
+
+    if (slot) {
+        const wchar_t* state = L"?";
+        switch (slot->state) {
+            case ChildState::Starting: state = L"Starting"; break;
+            case ChildState::Ready:    state = L"Running";  break;
+            case ChildState::Dead:     state = L"Dead";     break;
+        }
+        String s1 = utils::Format(L"[Slot %d] PID %lu  %s",
+                                   slot->slot_id, slot->pid, state);
+        ::SendMessageW(status_bar_, SB_SETTEXTW, 1,
+                       reinterpret_cast<LPARAM>(s1.c_str()));
+
+        long idle_ms = heartbeat_ ? heartbeat_->GetIdleMs(sid) : -1;
+        String s2 = (idle_ms < 0)
+            ? String(L"Heartbeat: --")
+            : utils::Format(L"Idle: %ldms", idle_ms);
+        ::SendMessageW(status_bar_, SB_SETTEXTW, 2,
+                       reinterpret_cast<LPARAM>(s2.c_str()));
+    } else {
+        ::SendMessageW(status_bar_, SB_SETTEXTW, 1,
+                       reinterpret_cast<LPARAM>(L""));
+        ::SendMessageW(status_bar_, SB_SETTEXTW, 2,
+                       reinterpret_cast<LPARAM>(L""));
+    }
 }
 
 /* ============================================================
