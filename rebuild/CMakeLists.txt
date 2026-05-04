@@ -42,6 +42,8 @@ add_compile_definitions(
 set(MHTABX_SOURCES
     src/main.cpp
     src/MainFrame.cpp
+    src/TabController.cpp
+    src/ChildProcessManager.cpp
     src/Utils.cpp
     src/resource/app.rc
 )

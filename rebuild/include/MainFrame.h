@@ -1,14 +1,17 @@
 /**
  * mhtabx - 主窗口类
  *
- * W1 阶段：仅空壳（创建窗口、处理 WM_DESTROY、显示一个居中提示文字）
- * W2 阶段：会扩展为包含 TabController 成员
+ * W2 阶段：集成 TabController + ChildProcessManager，
+ * 处理子进程握手协议（MHX_NEW_CLIENT），自动嵌入子窗口。
  */
 
 #pragma once
 #include "common.h"
 
 namespace mhx {
+
+class TabController;
+class ChildProcessManager;
 
 class MainFrame {
 public:
@@ -59,6 +62,16 @@ private:
     LRESULT OnPaint();
     LRESULT OnSize(int cx, int cy);
     LRESULT OnCopyData(HWND from, const COPYDATASTRUCT* cds);
+    LRESULT OnTimer(UINT_PTR id);
+    LRESULT OnNotify(int ctrl_id, NMHDR* hdr);
+
+    /* IPC 消息处理（子进程发来） */
+    LRESULT OnNewClient(WPARAM slot_id, LPARAM child_hwnd);
+    LRESULT OnHeartbeat(WPARAM slot_id, LPARAM lp);
+    LRESULT OnCleanupView(WPARAM slot_id, LPARAM lp);
+
+    /** 启动一个示例子进程（demo_child.exe），用于 W2 集成测试 */
+    void LaunchDemoChild();
 
 private:
     HINSTANCE hInstance_   = nullptr;
@@ -66,6 +79,10 @@ private:
     u32       instance_id_ = 0;          /* MD5(workdir) 前 32 位 */
     String    class_name_;               /* 完整窗口类名 */
     String    pending_cmd_line_;         /* OnCreate 后再处理 */
+
+    /* W2: Tab 控件 + 子进程管理 */
+    std::unique_ptr<TabController>       tab_ctrl_;
+    std::unique_ptr<ChildProcessManager> child_mgr_;
 };
 
 } /* namespace mhx */
