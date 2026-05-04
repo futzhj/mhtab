@@ -10,6 +10,7 @@
 
 #define IDC_TAB_MAIN            300
 #define IDC_STATUS_BAR          301
+#define IDC_TOOLBAR             302
 
 /* === 菜单/命令 ID === */
 #define ID_FILE_NEW             40001

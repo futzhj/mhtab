@@ -229,6 +229,48 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
     session_store_ = std::make_unique<SessionStore>(
         utils::GetExecutableDirectory() + L"mhtabx.ini");
 
+    /* W5-3: 工具栏 (图标 + 文字) - 复用菜单 ID 走 WM_COMMAND */
+    toolbar_ = ::CreateWindowExW(
+        0, TOOLBARCLASSNAMEW, L"",
+        WS_CHILD | WS_VISIBLE | CCS_TOP | CCS_NODIVIDER |
+            TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | TBSTYLE_LIST,
+        0, 0, 0, 0, hwnd_,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_TOOLBAR)),
+        hInstance_, nullptr);
+    if (toolbar_) {
+        ::SendMessageW(toolbar_, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
+        ::SendMessageW(toolbar_, TB_SETEXTENDEDSTYLE, 0,
+                       TBSTYLE_EX_MIXEDBUTTONS);
+
+        /* 使用 Common Controls 标准小图标集 (16x16)，免去单独的位图资源 */
+        TBADDBITMAP tbab = { HINST_COMMCTRL, IDB_STD_SMALL_COLOR };
+        int std_idx = static_cast<int>(::SendMessageW(
+            toolbar_, TB_ADDBITMAP, 0, reinterpret_cast<LPARAM>(&tbab)));
+
+        TBBUTTON btns[] = {
+            { std_idx + STD_FILENEW, ID_FILE_NEW,
+              TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT | BTNS_AUTOSIZE,
+              {0}, 0, reinterpret_cast<INT_PTR>(L"新建 Tab") },
+            { std_idx + STD_DELETE, ID_FILE_CLOSE_TAB,
+              TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT | BTNS_AUTOSIZE,
+              {0}, 0, reinterpret_cast<INT_PTR>(L"关闭") },
+            { 0, 0, 0, BTNS_SEP, {0}, 0, 0 },
+            { std_idx + STD_UNDO, ID_TAB_PREV,
+              TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT | BTNS_AUTOSIZE,
+              {0}, 0, reinterpret_cast<INT_PTR>(L"上一个") },
+            { std_idx + STD_REDOW, ID_TAB_NEXT,
+              TBSTATE_ENABLED, BTNS_BUTTON | BTNS_SHOWTEXT | BTNS_AUTOSIZE,
+              {0}, 0, reinterpret_cast<INT_PTR>(L"下一个") },
+        };
+        ::SendMessageW(toolbar_, TB_ADDBUTTONS,
+                       static_cast<WPARAM>(_countof(btns)),
+                       reinterpret_cast<LPARAM>(btns));
+        ::SendMessageW(toolbar_, TB_AUTOSIZE, 0, 0);
+    } else {
+        MHX_LOG_WARN(L"CreateWindowExW(TOOLBAR) failed: %s",
+                     utils::FormatSystemError(::GetLastError()).c_str());
+    }
+
     /* W5-1: 状态栏 - 3 个分区:
      *   [0] Tab 总数    ~160px
      *   [1] 当前 slot+PID+State  ~400px
@@ -297,7 +339,16 @@ LRESULT MainFrame::OnPaint() {
 }
 
 LRESULT MainFrame::OnSize(int cx, int cy) {
-    /* StatusBar 先自动贴底并重排分区 */
+    /* W5-3: 工具栏 TB_AUTOSIZE 自动贴顶 */
+    int tb_h = 0;
+    if (toolbar_) {
+        ::SendMessageW(toolbar_, TB_AUTOSIZE, 0, 0);
+        RECT tb_rc = {};
+        ::GetWindowRect(toolbar_, &tb_rc);
+        tb_h = tb_rc.bottom - tb_rc.top;
+    }
+
+    /* W5-1: StatusBar 自动贴底并重排分区 */
     int sb_h = 0;
     if (status_bar_) {
         ::SendMessageW(status_bar_, WM_SIZE, 0, 0);
@@ -305,8 +356,16 @@ LRESULT MainFrame::OnSize(int cx, int cy) {
         ::GetWindowRect(status_bar_, &sb_rc);
         sb_h = sb_rc.bottom - sb_rc.top;
     }
-    /* 剩余空间给 TabController */
-    if (tab_ctrl_) tab_ctrl_->Resize(cx, std::max(0, cy - sb_h));
+
+    /* TabController 在 toolbar 和 status bar 之间
+     * 先 SetWindowPos 改位置（TabController::Resize 用 SWP_NOMOVE 不会覆盖 y） */
+    int tab_h = std::max(0, cy - tb_h - sb_h);
+    if (tab_ctrl_ && tab_ctrl_->GetHwnd()) {
+        ::SetWindowPos(tab_ctrl_->GetHwnd(), nullptr,
+                       0, tb_h, cx, tab_h,
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+        tab_ctrl_->Resize(cx, tab_h);
+    }
     return 0;
 }
 
@@ -661,12 +720,7 @@ void MainFrame::UpdateStatusBar() {
     auto* slot = tab_ctrl_->FindSlot(sid);
 
     if (slot) {
-        const wchar_t* state = L"?";
-        switch (slot->state) {
-            case ChildState::Starting: state = L"Starting"; break;
-            case ChildState::Ready:    state = L"Running";  break;
-            case ChildState::Dead:     state = L"Dead";     break;
-        }
+        const wchar_t* state = ToString(slot->state);   /* 来自 common.h */
         String s1 = utils::Format(L"[Slot %d] PID %lu  %s",
                                    slot->slot_id, slot->pid, state);
         ::SendMessageW(status_bar_, SB_SETTEXTW, 1,

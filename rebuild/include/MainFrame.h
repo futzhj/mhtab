@@ -118,6 +118,9 @@ private:
 
     /* W5-2: 当前窗口 DPI（用于按比例缩放 UI 元素） */
     UINT current_dpi_ = 96;
+
+    /* W5-3: 工具栏 */
+    HWND toolbar_ = nullptr;
 };
 
 } /* namespace mhx */
