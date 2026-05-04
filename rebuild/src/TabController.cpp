@@ -4,6 +4,7 @@
 
 #include "TabController.h"
 #include "Utils.h"
+#include "resource/resource.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32")
@@ -572,8 +573,60 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+
+        /* W6-1: Tab 头右键弹出 context menu。
+         * 在 RBUTTONUP（非 DOWN）触发更接近 Windows 习惯，
+         * 命中 tab 才弹，未命中走默认处理。 */
+        case WM_RBUTTONUP: {
+            int x = GET_X_LPARAM(lp);
+            int y = GET_Y_LPARAM(lp);
+            int idx = HitTestTab(x, y);
+            if (idx < 0) return 0;
+
+            POINT pt = { x, y };
+            ::ClientToScreen(tab_ctrl_, &pt);
+            ShowContextMenu(idx, pt.x, pt.y);
+            return 1;   /* 已处理 */
+        }
     }
     return 0;
+}
+
+/* ============================================================
+ * W6-1: ShowContextMenu
+ *
+ * 加载 IDR_TAB_CONTEXT_MENU 资源，取第一个 popup 子菜单，在 (sx, sy)
+ * 弹出。先把目标 tab 切到 selected，让命令作用于该 tab。
+ *
+ * TPM_LEFTALIGN | TPM_RIGHTBUTTON 是 Windows Explorer 风格：
+ *   左对齐到光标，右键也能选中 menu item。
+ *
+ * 注意 LoadMenuW 返回的 root 必须 DestroyMenu，否则资源泄漏。
+ * ============================================================ */
+void TabController::ShowContextMenu(int tab_idx, int sx, int sy) {
+    if (!tab_ctrl_ || !parent_ || tab_idx < 0) return;
+
+    /* 切到目标 tab，让后续命令作用于它 */
+    TCITEMW item = {};
+    item.mask = TCIF_PARAM;
+    if (!TabCtrl_GetItem(tab_ctrl_, tab_idx, &item)) return;
+    int slot_id = static_cast<int>(item.lParam);
+    SelectSlot(slot_id);
+
+    HMENU root = ::LoadMenuW(hInstance_, MAKEINTRESOURCEW(IDR_TAB_CONTEXT_MENU));
+    if (!root) {
+        MHX_LOG_ERROR(L"LoadMenu(IDR_TAB_CONTEXT_MENU) failed: %s",
+                      utils::FormatSystemError(::GetLastError()).c_str());
+        return;
+    }
+    HMENU sub = ::GetSubMenu(root, 0);
+    if (sub) {
+        /* 命令通过 WM_COMMAND 自动发到 parent_，不需要 TPM_RETURNCMD */
+        ::TrackPopupMenu(sub,
+                         TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON,
+                         sx, sy, 0, parent_, nullptr);
+    }
+    ::DestroyMenu(root);
 }
 
 /* ============================================================

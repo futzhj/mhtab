@@ -590,6 +590,65 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
             return 0;
         }
 
+        case ID_TAB_ACTIVATE: {
+            /* W6-1: 右键菜单"激活" - ShowContextMenu 已经先 SelectSlot 过，
+             * 这里再做一次保险：把焦点交给当前 child 窗口 */
+            if (!tab_ctrl_) return 0;
+            int sid = tab_ctrl_->GetSelectedSlotId();
+            if (auto* slot = tab_ctrl_->FindSlot(sid)) {
+                if (slot->child_hwnd && ::IsWindow(slot->child_hwnd))
+                    ::SetFocus(slot->child_hwnd);
+            }
+            return 0;
+        }
+
+        case ID_TAB_COPY_PATH: {
+            /* W6-1: 复制 "exe_path [args]" 到剪贴板，方便 cmd 重新拉起 */
+            if (!tab_ctrl_) return 0;
+            int sid = tab_ctrl_->GetSelectedSlotId();
+            auto* slot = tab_ctrl_->FindSlot(sid);
+            if (!slot || slot->exe_path.empty()) return 0;
+
+            /* 路径含空格时手动加引号；参数原样追加 */
+            String text;
+            bool need_quote = slot->exe_path.find(L' ') != String::npos;
+            if (need_quote) text.push_back(L'"');
+            text += slot->exe_path;
+            if (need_quote) text.push_back(L'"');
+            if (!slot->cmdline.empty()) {
+                text.push_back(L' ');
+                text += slot->cmdline;
+            }
+
+            /* 标准 Win32 剪贴板写入：
+             *   1. OpenClipboard(hwnd) 锁定剪贴板到本进程
+             *   2. EmptyClipboard 清空旧数据
+             *   3. GMEM_MOVEABLE 分配 + memcpy + SetClipboardData
+             *   4. CloseClipboard 后剪贴板"接管"句柄，禁止 GlobalFree */
+            if (::OpenClipboard(hwnd_)) {
+                ::EmptyClipboard();
+                size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+                HGLOBAL hmem = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
+                if (hmem) {
+                    if (void* p = ::GlobalLock(hmem)) {
+                        memcpy(p, text.c_str(), bytes);
+                        ::GlobalUnlock(hmem);
+                        if (!::SetClipboardData(CF_UNICODETEXT, hmem)) {
+                            /* SetClipboardData 失败时句柄归我们，需释放 */
+                            ::GlobalFree(hmem);
+                            MHX_LOG_ERROR(L"SetClipboardData failed: %s",
+                                utils::FormatSystemError(::GetLastError()).c_str());
+                        }
+                    } else {
+                        ::GlobalFree(hmem);
+                    }
+                }
+                ::CloseClipboard();
+                MHX_LOG_INFO(L"Copied to clipboard: %s", text.c_str());
+            }
+            return 0;
+        }
+
         case ID_HELP_ABOUT:
             ::MessageBoxW(hwnd_,
                 L"mhtabx - \u591a\u8fdb\u7a0b Tab \u5bb9\u5668\n"

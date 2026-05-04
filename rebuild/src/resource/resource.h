@@ -7,6 +7,7 @@
 
 #define IDR_MAINMENU            200
 #define IDR_ACCELERATOR         201
+#define IDR_TAB_CONTEXT_MENU    202   /* W6-1: Tab 头右键菜单 */
 
 #define IDC_TAB_MAIN            300
 #define IDC_STATUS_BAR          301
@@ -21,5 +22,7 @@
 #define ID_TAB_PREV             40011
 #define ID_TAB_RENAME           40012
 #define ID_TAB_DETACH           40013
+#define ID_TAB_COPY_PATH        40014   /* W6-1: 复制 exe+cmdline 到剪贴板 */
+#define ID_TAB_ACTIVATE         40015   /* W6-1: 右键菜单"激活"项（等价于点击 Tab） */
 
 #define ID_HELP_ABOUT           40020

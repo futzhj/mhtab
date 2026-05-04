@@ -157,6 +157,15 @@ private:
     /** 鼠标在哪个 Tab 上（-1 表示不在任何 Tab） */
     int HitTestTab(int x, int y) const;
 
+    /**
+     * W6-1: 在屏幕坐标 (sx, sy) 弹出 Tab 右键菜单。
+     *
+     * tab_idx 用于先把对应 Tab 切到 selected，让后续菜单命令
+     * （重命名/分离/复制/关闭）都作用于这个 Tab。命令本身通过
+     * WM_COMMAND 发给 parent_，由 MainFrame::OnCommand 统一处理。
+     */
+    void ShowContextMenu(int tab_idx, int sx, int sy);
+
 private:
     HWND       tab_ctrl_         = nullptr;
     HWND       parent_           = nullptr;

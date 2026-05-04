@@ -80,6 +80,27 @@ BEGIN
 END
 
 /* ============================================================
+ * W6-1: Tab 头右键弹出菜单
+ *
+ * 通过 LoadMenu(IDR_TAB_CONTEXT_MENU) 加载，使用 GetSubMenu(0) 取
+ * 真正的 popup 子菜单交给 TrackPopupMenu。命令通过 WM_COMMAND
+ * 发到 parent（MainFrame），统一进入 OnCommand 路由。
+ * ============================================================ */
+IDR_TAB_CONTEXT_MENU MENU
+BEGIN
+    POPUP ""
+    BEGIN
+        MENUITEM "激活(&A)",                     ID_TAB_ACTIVATE
+        MENUITEM SEPARATOR
+        MENUITEM "重命名(&R)\tF2",               ID_TAB_RENAME
+        MENUITEM "分离为独立窗口(&D)\tCtrl+D",    ID_TAB_DETACH
+        MENUITEM "复制启动命令(&C)",              ID_TAB_COPY_PATH
+        MENUITEM SEPARATOR
+        MENUITEM "关闭 Tab(&W)\tCtrl+W",         ID_FILE_CLOSE_TAB
+    END
+END
+
+/* ============================================================
  * 加速键表
  *
  * NOINVERT 让菜单不会被加速键触发时反白闪一下
