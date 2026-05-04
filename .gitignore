@@ -1,0 +1,82 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+bin/
+lib/
+
+# IDE / Editor
+.vs/
+.vscode/
+.idea/
+.windsurf/
+*.swp
+*.swo
+*~
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Visual Studio
+*.vcxproj*
+*.sln
+*.suo
+*.user
+*.ncb
+*.sdf
+*.opensdf
+
+# Compiled objects
+*.obj
+*.o
+*.pdb
+*.idb
+*.ilk
+*.exp
+*.lib
+*.a
+*.dll
+*.so
+*.dylib
+*.exe
+*.pch
+
+# Platform-specific folders
+x64/
+x86/
+Debug/
+Release/
+ARM/
+ARM64/
+
+# Reverse engineering (hard-exclude for safety)
+reverse/mhtab.exe
+reverse/*.exe
+reverse/*.i64
+reverse/*.id0
+reverse/*.id1
+reverse/*.id2
+reverse/*.nam
+reverse/*.til
+reverse/*.idb
+reverse/.windsurf/
+reverse/.vscode/
+reverse/*.code-workspace
+
+# Archives / large data
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
