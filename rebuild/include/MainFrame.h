@@ -12,6 +12,7 @@ namespace mhx {
 
 class TabController;
 class ChildProcessManager;
+class HeartbeatMonitor;
 
 class MainFrame {
 public:
@@ -67,8 +68,13 @@ private:
 
     /* IPC 消息处理（子进程发来） */
     LRESULT OnNewClient(WPARAM slot_id, LPARAM child_hwnd);
-    LRESULT OnHeartbeat(WPARAM slot_id, LPARAM lp);
+    LRESULT OnReadyConfirm(WPARAM slot_id, LPARAM tick);
+    LRESULT OnUpdatePos(WPARAM slot_id, LPARAM packed_xy);
+    LRESULT OnNewView(WPARAM slot_id, LPARAM hint);
     LRESULT OnCleanupView(WPARAM slot_id, LPARAM lp);
+
+    /* 键盘输入转发到当前 active 子窗口 */
+    bool ForwardKeyToActiveChild(UINT msg, WPARAM wp, LPARAM lp);
 
     /** 启动一个示例子进程（demo_child.exe），用于 W2 集成测试 */
     void LaunchDemoChild();
@@ -83,6 +89,9 @@ private:
     /* W2: Tab 控件 + 子进程管理 */
     std::unique_ptr<TabController>       tab_ctrl_;
     std::unique_ptr<ChildProcessManager> child_mgr_;
+
+    /* W3: 心跳监控 */
+    std::unique_ptr<HeartbeatMonitor>    heartbeat_;
 };
 
 } /* namespace mhx */

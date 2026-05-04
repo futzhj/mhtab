@@ -1,21 +1,23 @@
 /**
- * mhtabx - 主窗口实现 (W2)
+ * mhtabx - 主窗口实现 (W3)
  *
- * 在 W1 基础上添加：
- *   - TabController + ChildProcessManager 集成
- *   - 子进程握手协议 (MHX_NEW_CLIENT)
- *   - 100ms 周期定时器轮询子进程退出
- *   - 启动示例子进程的菜单/按钮（暂用 F5 快捷键）
+ * W3 新增：
+ *   - HeartbeatMonitor 1 秒心跳，3 秒超时强制清理
+ *   - 完整 IPC 消息处理（READY_CONFIRM / UPDATE_POS / NEW_VIEW）
+ *   - Tab 切换时给子进程发 ACTIVATE_VIEW / HIDE_VIEW
+ *   - 主窗口键盘输入转发到当前 active 子窗口
  */
 
 #include "MainFrame.h"
 #include "TabController.h"
 #include "ChildProcessManager.h"
+#include "HeartbeatMonitor.h"
+#include "IpcProtocol.h"
 #include "Utils.h"
 
 namespace mhx {
 
-constexpr UINT_PTR kPollTimerId = 1;
+constexpr UINT_PTR kPollTimerId  = 1;
 constexpr UINT     kPollPeriodMs = 100;
 constexpr int      kTabCtrlId    = 0x1001;
 
@@ -25,7 +27,8 @@ constexpr int      kTabCtrlId    = 0x1001;
 MainFrame::MainFrame() = default;
 
 MainFrame::~MainFrame() {
-    /* 析构顺序：先 child_mgr_（终止子进程），再 tab_ctrl_（还原父子关系） */
+    /* 析构顺序: heartbeat_ → child_mgr_ → tab_ctrl_ */
+    heartbeat_.reset();
     child_mgr_.reset();
     tab_ctrl_.reset();
     if (hwnd_ && ::IsWindow(hwnd_)) {
@@ -79,22 +82,17 @@ bool MainFrame::Create(HINSTANCE hInstance, const String& cmd_line) {
     if (!RegisterWindowClass(hInstance, class_name_)) return false;
 
     hwnd_ = ::CreateWindowExW(
-        0,
-        class_name_.c_str(),
+        0, class_name_.c_str(),
         L"mhtabx - 多进程 Tab 容器",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        960, 640,
-        nullptr, nullptr,
-        hInstance,
-        this);
+        CW_USEDEFAULT, CW_USEDEFAULT, 960, 640,
+        nullptr, nullptr, hInstance, this);
 
     if (!hwnd_) {
         MHX_LOG_ERROR(L"CreateWindowExW failed: %s",
                       utils::FormatSystemError(::GetLastError()).c_str());
         return false;
     }
-
     MHX_LOG_INFO(L"MainFrame created: hwnd=%p, instance_id=0x%08X",
                  hwnd_, instance_id_);
     return true;
@@ -113,18 +111,13 @@ void MainFrame::Show(int nShowCmd) {
 void MainFrame::HandleForwardedCmdLine(const String& cmd_line) {
     MHX_LOG_INFO(L"ForwardedCmdLine: %s", cmd_line.c_str());
 
-    /* 把窗口前台化 */
     if (hwnd_) {
         if (::IsIconic(hwnd_)) ::ShowWindow(hwnd_, SW_RESTORE);
         ::SetForegroundWindow(hwnd_);
     }
 
-    /* W2: 把命令行解析为 exe + args，启动新子进程 */
-    /* TODO(W3): 真正解析命令行格式 */
     if (!cmd_line.empty() && child_mgr_) {
-        /* 简单约定：第一个 token = exe，其余 = args */
-        String exe;
-        String args;
+        String exe, args;
         size_t sp = cmd_line.find(L' ');
         if (sp == String::npos) { exe = cmd_line; }
         else { exe = cmd_line.substr(0, sp); args = cmd_line.substr(sp + 1); }
@@ -172,14 +165,24 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case INST_QUERY_INSTANCE_ID:  return static_cast<LRESULT>(instance_id_);
         case INST_QUERY_STATE:        return tab_ctrl_ ? tab_ctrl_->GetSelectedSlotId() : -1;
 
-        /* 子进程握手 */
+        /* 子进程发来的消息 */
         case MHX_NEW_CLIENT:    return OnNewClient(wp, lp);
-        case MHX_HEARTBEAT:     return OnHeartbeat(wp, lp);
+        case MHX_READY_CONFIRM: return OnReadyConfirm(wp, lp);
+        case MHX_UPDATE_POS:    return OnUpdatePos(wp, lp);
+        case MHX_NEW_VIEW:      return OnNewView(wp, lp);
         case MHX_CLEANUP_VIEW:  return OnCleanupView(wp, lp);
+        case MHX_HEARTBEAT:     return TRUE;   /* 子进程发的兼容情况 */
 
-        /* 调试快捷键：F5 启动 demo_child */
+        /* 调试: F5 启动 demo_child；其余键盘事件转发 */
         case WM_KEYDOWN:
             if (wp == VK_F5) { LaunchDemoChild(); return 0; }
+            if (ForwardKeyToActiveChild(msg, wp, lp)) return 0;
+            break;
+        case WM_KEYUP:
+        case WM_CHAR:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+            if (ForwardKeyToActiveChild(msg, wp, lp)) return 0;
             break;
     }
     return ::DefWindowProcW(hwnd_, msg, wp, lp);
@@ -191,7 +194,6 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
 LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
     MHX_LOG_TRACE(L"OnCreate");
 
-    /* 创建 TabController */
     tab_ctrl_ = std::make_unique<TabController>();
     RECT rc;
     ::GetClientRect(hwnd_, &rc);
@@ -200,17 +202,15 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
         return -1;
     }
 
-    /* 创建 ChildProcessManager */
     child_mgr_ = std::make_unique<ChildProcessManager>(*tab_ctrl_);
     child_mgr_->SetHostInfo(hwnd_, instance_id_);
 
-    /* 100ms 轮询子进程退出 */
+    heartbeat_ = std::make_unique<HeartbeatMonitor>(*tab_ctrl_, *child_mgr_);
+
     ::SetTimer(hwnd_, kPollTimerId, kPollPeriodMs, nullptr);
 
-    /* 处理初始命令行（如果有） */
     if (!pending_cmd_line_.empty()) {
         ::PostMessageW(hwnd_, WM_USER + 999, 0, 0);
-        /* 在下一个消息循环里处理，确保窗口完全初始化 */
     }
     return 0;
 }
@@ -219,7 +219,7 @@ LRESULT MainFrame::OnDestroy() {
     MHX_LOG_TRACE(L"OnDestroy");
     ::KillTimer(hwnd_, kPollTimerId);
 
-    /* 主动销毁，避免 ~MainFrame 在 PostQuitMessage 之后还操作子窗口 */
+    heartbeat_.reset();
     child_mgr_.reset();
     tab_ctrl_.reset();
 
@@ -231,15 +231,15 @@ LRESULT MainFrame::OnPaint() {
     PAINTSTRUCT ps;
     HDC hdc = ::BeginPaint(hwnd_, &ps);
 
-    /* TabController 已占据整个 client，但 Tab 之外仍有窗口背景需绘 */
     if (tab_ctrl_ && tab_ctrl_->GetActiveCount() == 0) {
         RECT rc;
         ::GetClientRect(hwnd_, &rc);
         ::SetBkMode(hdc, TRANSPARENT);
         ::SetTextColor(hdc, RGB(96, 96, 96));
         const wchar_t* hint =
-            L"按 F5 启动一个 demo_child 子进程\n"
-            L"或通过命令行: mhtabx \"demo_child.exe\"";
+            L"按 F5 启动 demo_child 子进程\n"
+            L"或通过命令行: mhtabx \"demo_child.exe\"\n\n"
+            L"键盘输入会自动转发到当前激活的 Tab";
         ::DrawTextW(hdc, hint, -1, &rc,
                     DT_CENTER | DT_VCENTER | DT_NOPREFIX);
     }
@@ -254,19 +254,45 @@ LRESULT MainFrame::OnSize(int cx, int cy) {
 }
 
 LRESULT MainFrame::OnTimer(UINT_PTR id) {
-    if (id == kPollTimerId && child_mgr_) {
+    if (id != kPollTimerId) return 0;
+
+    /* 1. 子进程退出探测 */
+    if (child_mgr_) {
         int dead = child_mgr_->Poll();
         if (dead >= 0) {
-            /* 触发重绘提示文字 */
+            if (heartbeat_) heartbeat_->UnregisterSlot(dead);
             ::InvalidateRect(hwnd_, nullptr, TRUE);
         }
     }
+
+    /* 2. 心跳轮询 */
+    if (heartbeat_) heartbeat_->Tick();
+
     return 0;
 }
 
+/* ============================================================
+ * Tab 切换通知 - 同步给子进程 ACTIVATE/HIDE
+ * ============================================================ */
 LRESULT MainFrame::OnNotify(int /*ctrl_id*/, NMHDR* hdr) {
-    if (tab_ctrl_) return tab_ctrl_->HandleNotify(hdr);
-    return 0;
+    if (!tab_ctrl_) return 0;
+
+    /* 记录切换前的 slot，处理后给前后两个 slot 发对应 ipc 消息 */
+    int prev_slot = tab_ctrl_->GetSelectedSlotId();
+    LRESULT r = tab_ctrl_->HandleNotify(hdr);
+    int curr_slot = tab_ctrl_->GetSelectedSlotId();
+
+    if (prev_slot != curr_slot) {
+        if (auto* p = tab_ctrl_->FindSlot(prev_slot)) {
+            if (p->child_hwnd && ::IsWindow(p->child_hwnd))
+                ipc::PostHideView(p->child_hwnd, prev_slot);
+        }
+        if (auto* c = tab_ctrl_->FindSlot(curr_slot)) {
+            if (c->child_hwnd && ::IsWindow(c->child_hwnd))
+                ipc::PostActivateView(c->child_hwnd, curr_slot);
+        }
+    }
+    return r;
 }
 
 LRESULT MainFrame::OnCopyData(HWND /*from*/, const COPYDATASTRUCT* cds) {
@@ -290,11 +316,6 @@ LRESULT MainFrame::OnCopyData(HWND /*from*/, const COPYDATASTRUCT* cds) {
  * IPC 消息处理（子进程→主进程）
  * ============================================================ */
 
-/**
- * 子进程注册握手：
- *   wParam = slot_id（子进程从命令行 --mhx-slot 收到）
- *   lParam = HWND of child main window
- */
 LRESULT MainFrame::OnNewClient(WPARAM slot_id_w, LPARAM child_hwnd_l) {
     int  slot_id    = static_cast<int>(slot_id_w);
     HWND child_hwnd = reinterpret_cast<HWND>(child_hwnd_l);
@@ -313,19 +334,57 @@ LRESULT MainFrame::OnNewClient(WPARAM slot_id_w, LPARAM child_hwnd_l) {
         return FALSE;
     }
 
-    /* 触发重绘移除提示文字 */
+    /* 注册到心跳监视器 */
+    if (heartbeat_) heartbeat_->RegisterSlot(slot_id);
+
+    /* 立即发一次 ACTIVATE_VIEW 让子进程知道自己是 active */
+    ipc::PostActivateView(child_hwnd, slot_id);
+
     ::InvalidateRect(hwnd_, nullptr, TRUE);
     return TRUE;
 }
 
-LRESULT MainFrame::OnHeartbeat(WPARAM /*slot_id*/, LPARAM /*lp*/) {
-    return TRUE;   /* 简单返回 TRUE 表示存活 */
+LRESULT MainFrame::OnReadyConfirm(WPARAM slot_id_w, LPARAM tick_l) {
+    int slot_id = static_cast<int>(slot_id_w);
+    if (heartbeat_) heartbeat_->OnReadyConfirm(slot_id, static_cast<ULONG>(tick_l));
+    return TRUE;
+}
+
+LRESULT MainFrame::OnUpdatePos(WPARAM slot_id_w, LPARAM packed_xy) {
+    /* 嵌入后子进程位置由 host 控制，这里只记录日志 */
+    MHX_LOG_TRACE(L"OnUpdatePos slot=%d x=%d y=%d",
+                  static_cast<int>(slot_id_w),
+                  ipc::UnpackX(packed_xy), ipc::UnpackY(packed_xy));
+    return TRUE;
+}
+
+LRESULT MainFrame::OnNewView(WPARAM /*slot_id*/, LPARAM /*hint*/) {
+    /* 子进程请求新建 Tab：复用 LaunchDemoChild 启动同一个程序 */
+    LaunchDemoChild();
+    return TRUE;
 }
 
 LRESULT MainFrame::OnCleanupView(WPARAM slot_id, LPARAM /*lp*/) {
-    if (tab_ctrl_) tab_ctrl_->RemoveSlot(static_cast<int>(slot_id));
+    int sid = static_cast<int>(slot_id);
+    if (heartbeat_) heartbeat_->UnregisterSlot(sid);
+    if (tab_ctrl_)  tab_ctrl_->RemoveSlot(sid);
     ::InvalidateRect(hwnd_, nullptr, TRUE);
     return TRUE;
+}
+
+/* ============================================================
+ * 键盘转发：主窗口收到 → 当前 active 子窗口
+ * ============================================================ */
+bool MainFrame::ForwardKeyToActiveChild(UINT msg, WPARAM wp, LPARAM lp) {
+    if (!tab_ctrl_) return false;
+    int sid = tab_ctrl_->GetSelectedSlotId();
+    if (sid < 0) return false;
+
+    auto* slot = tab_ctrl_->FindSlot(sid);
+    if (!slot || !slot->child_hwnd || !::IsWindow(slot->child_hwnd)) return false;
+
+    ipc::SendForwardInput(slot->child_hwnd, msg, wp, lp);
+    return true;
 }
 
 /* ============================================================
@@ -334,16 +393,13 @@ LRESULT MainFrame::OnCleanupView(WPARAM slot_id, LPARAM /*lp*/) {
 void MainFrame::LaunchDemoChild() {
     if (!child_mgr_) return;
 
-    /* demo_child.exe 与 mhtabx.exe 同目录 */
     String exe = utils::GetExecutableDirectory() + L"demo_child.exe";
-
     if (::GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
         ::MessageBoxW(hwnd_,
                       utils::Format(L"未找到 demo_child.exe:\n%s", exe.c_str()).c_str(),
                       L"mhtabx", MB_ICONWARNING);
         return;
     }
-
     int slot_id = child_mgr_->LaunchChild(exe, L"", L"");
     MHX_LOG_INFO(L"LaunchDemoChild: slot=%d", slot_id);
 }
