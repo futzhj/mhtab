@@ -49,20 +49,48 @@ public:
 };
 
 /* ============================================================
- * 默认主题：扁平现代风
+ * 默认主题：扁平现代风（明色，类 VS Code Light+）
  *
- * 颜色取自常见 IDE 风格：
  *   - selected: #0078D4 蓝底白字
  *   - hot:      #E5F1FB 浅蓝
  *   - normal:   #F0F0F0 浅灰
- *   - text:     #202020 深灰（normal/hot），#FFFFFF（selected）
+ *   - text:     #404040 深灰（normal/hot），#FFFFFF（selected）
  *   - border:   #C7C7C7 浅灰
  * ============================================================ */
 class FlatModernTheme : public ITheme {
 public:
     void DrawTab(const TabPaintContext& ctx) override;
-    COLORREF GetClientBgColor() const override { return RGB(245, 245, 248); }
+    COLORREF GetClientBgColor() const override;
     int      GetTabHeight()     const override { return 28; }
 };
+
+/* ============================================================
+ * W6-4 暗色主题（类 VS Code Dark+）
+ *
+ *   - selected:    #007ACC accent 蓝 + 白字
+ *   - hot:         #2C2D33 深灰
+ *   - normal:      #1E1E1E 编辑器黑
+ *   - text:        #CCCCCC 浅灰
+ *   - border:      #333333
+ *   - client bg:   #252526
+ * ============================================================ */
+class DarkModernTheme : public ITheme {
+public:
+    void DrawTab(const TabPaintContext& ctx) override;
+    COLORREF GetClientBgColor() const override;
+    int      GetTabHeight()     const override { return 28; }
+};
+
+/* ============================================================
+ * W6-4 ThemeFactory
+ *
+ * 按设置项 [General]Theme 的字符串名生成对应的 ITheme 实例。
+ * 未知名称回退到 FlatModern。
+ *
+ * 已支持的名称：
+ *   "FlatModern"   - FlatModernTheme（默认）
+ *   "DarkModern"   - DarkModernTheme
+ * ============================================================ */
+std::unique_ptr<ITheme> CreateTheme(const String& name);
 
 } /* namespace mhx */

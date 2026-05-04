@@ -14,6 +14,7 @@
 #include "HeartbeatMonitor.h"
 #include "SessionStore.h"
 #include "SettingsDialog.h"
+#include "Theme.h"
 #include "IpcProtocol.h"
 #include "Utils.h"
 #include "resource/resource.h"
@@ -236,6 +237,12 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
     SettingsValues sv = LoadSettings(ini_path);
     heartbeat_->SetTimings(sv.interval_ms, sv.timeout_ms);
     current_theme_name_ = sv.theme_name;
+
+    /* W6-4: 按 ini 里的主题名安装主题（FlatModern / DarkModern / ...）
+     * TabController 构造时已装了默认 FlatModernTheme，这里显式覆盖保证
+     * ini 指定的主题生效。CreateTheme 未识别的名字会回退到 FlatModern，
+     * 所以不会因为 ini 拼写错误而黑屏。 */
+    tab_ctrl_->SetTheme(CreateTheme(sv.theme_name));
 
     /* W5-3: 工具栏 (图标 + 文字) - 复用菜单 ID 走 WM_COMMAND */
     toolbar_ = ::CreateWindowExW(
@@ -608,7 +615,13 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
             SettingsValues sv;
             if (ShowSettingsDialog(hwnd_, settings_ini_path_, sv)) {
                 if (heartbeat_) heartbeat_->SetTimings(sv.interval_ms, sv.timeout_ms);
-                current_theme_name_ = sv.theme_name;
+
+                /* W6-4: 主题变更时重新构造 ITheme 并安装到 TabController。
+                 * 仅在名字变化时才换（避免每次 OK 都重建对象，即便用户没改主题）。*/
+                if (sv.theme_name != current_theme_name_) {
+                    current_theme_name_ = sv.theme_name;
+                    if (tab_ctrl_) tab_ctrl_->SetTheme(CreateTheme(sv.theme_name));
+                }
                 MHX_LOG_INFO(L"Settings applied: interval=%lu timeout=%lu theme=%s",
                              sv.interval_ms, sv.timeout_ms, sv.theme_name.c_str());
             }
