@@ -107,6 +107,7 @@ enum MhxMsg : UINT {
     MHX_GET_BY_PARENT   = WM_APP + 17,
     MHX_CLEANUP_VIEW    = WM_APP + 25,
     MHX_SHOW_WINDOW     = WM_APP + 26,
+    MHX_SET_TAB_ICON    = WM_APP + 27,    /* W6-2: 子→主，wp=slot_id, lp=HICON */
     MHX_ACTIVATE        = WM_APP + 100,
     MHX_BRING_TO_FRONT  = WM_APP + 101,
     MHX_FIND_BY_HWND    = WM_APP + 102,

@@ -110,6 +110,26 @@ inline void PostCleanupView(HWND host, int slot_id) {
                    static_cast<WPARAM>(slot_id), 0);
 }
 
+/**
+ * W6-2: 子进程上报 Tab 图标。
+ *
+ * 跨进程语义：HICON 是 user32 维护的全局句柄，可在主进程引用，
+ * 但子进程退出后图标会被系统回收。所以主进程收到后应立即 CopyIcon
+ * 复制一份私有副本（OnSetTabIcon 已实现）。
+ *
+ * 用 SendMessage 而非 Post：保证主进程在子进程退出前完成 CopyIcon。
+ */
+inline LRESULT SendSetTabIcon(HWND host, int slot_id, HICON icon,
+                              UINT timeout_ms = 1000) {
+    DWORD_PTR result = 0;
+    LRESULT r = ::SendMessageTimeoutW(
+        host, MHX_SET_TAB_ICON,
+        static_cast<WPARAM>(slot_id),
+        reinterpret_cast<LPARAM>(icon),
+        SMTO_ABORTIFHUNG, timeout_ms, &result);
+    return r ? static_cast<LRESULT>(result) : 0;
+}
+
 /* ============================================================
  * 协议封装：主→子
  * ============================================================ */

@@ -186,6 +186,7 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case MHX_UPDATE_POS:    return OnUpdatePos(wp, lp);
         case MHX_NEW_VIEW:      return OnNewView(wp, lp);
         case MHX_CLEANUP_VIEW:  return OnCleanupView(wp, lp);
+        case MHX_SET_TAB_ICON:  return OnSetTabIcon(wp, lp);   /* W6-2 */
         case MHX_HEARTBEAT:     return TRUE;   /* 子进程发的兼容情况 */
 
         case kMsgPostInit:
@@ -487,6 +488,57 @@ LRESULT MainFrame::OnCleanupView(WPARAM slot_id, LPARAM /*lp*/) {
     if (heartbeat_) heartbeat_->UnregisterSlot(sid);
     if (tab_ctrl_)  tab_ctrl_->RemoveSlot(sid);
     ::InvalidateRect(hwnd_, nullptr, TRUE);
+    return TRUE;
+}
+
+/* ============================================================
+ * W6-2: OnSetTabIcon
+ *
+ * 子进程通过 SendMessage(MHX_SET_TAB_ICON, slot_id, HICON) 上报图标。
+ *
+ * 关键设计：跨进程 HICON 安全策略
+ *   - 子进程传过来的 HICON 是它自己上下文中的句柄
+ *   - 用 CopyIcon 在主进程里立即复制一份独立副本，归我们所有
+ *   - 旧的 slot->icon（如果有）DestroyIcon 释放
+ *   - 子进程退出时它的 HICON 被系统回收，主进程的副本不受影响
+ *
+ * 失败容忍：CopyIcon 返回 NULL 时直接清空 icon，不影响其它功能。
+ * ============================================================ */
+LRESULT MainFrame::OnSetTabIcon(WPARAM slot_id_w, LPARAM icon_l) {
+    if (!tab_ctrl_) return FALSE;
+    int sid = static_cast<int>(slot_id_w);
+    auto* slot = tab_ctrl_->FindSlot(sid);
+    if (!slot) {
+        MHX_LOG_WARN(L"OnSetTabIcon: slot %d not found", sid);
+        return FALSE;
+    }
+
+    HICON src = reinterpret_cast<HICON>(icon_l);
+
+    /* 释放旧 icon */
+    if (slot->icon) {
+        ::DestroyIcon(slot->icon);
+        slot->icon = nullptr;
+    }
+
+    /* 复制新 icon（src 可能为 NULL，表示清除图标） */
+    if (src) {
+        slot->icon = ::CopyIcon(src);
+        if (!slot->icon) {
+            MHX_LOG_WARN(L"CopyIcon failed: %s",
+                utils::FormatSystemError(::GetLastError()).c_str());
+        }
+    }
+
+    /* 重绘对应 Tab 头 */
+    if (slot->tab_index >= 0 && tab_ctrl_->GetHwnd()) {
+        RECT rc;
+        if (TabCtrl_GetItemRect(tab_ctrl_->GetHwnd(), slot->tab_index, &rc))
+            ::InvalidateRect(tab_ctrl_->GetHwnd(), &rc, FALSE);
+    }
+
+    MHX_LOG_INFO(L"OnSetTabIcon: slot=%d icon=%p (copied=%p)",
+                 sid, src, slot->icon);
     return TRUE;
 }
 

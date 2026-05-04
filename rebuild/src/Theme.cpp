@@ -78,7 +78,7 @@ void FlatModernTheme::DrawTab(const TabPaintContext& ctx) {
         FillSolid(ctx.hdc, divider, kColBorder);
     }
 
-    /* 3. 文字 */
+    /* 3. 文字 + W6-2 图标 */
     String title;
     if (ctx.slot && !ctx.slot->title.empty()) {
         title = ctx.slot->title;
@@ -90,13 +90,28 @@ void FlatModernTheme::DrawTab(const TabPaintContext& ctx) {
     ::SetBkMode(ctx.hdc, TRANSPARENT);
     ::SetTextColor(ctx.hdc, fg);
 
-    /* 留 8px 内边距，超长省略 */
+    /* 留 8px 内边距 */
     RECT text_rc = ctx.rect;
     text_rc.left  += 8;
     text_rc.right -= 8;
 
+    /* W6-2: 图标在文字左侧居中 16x16，文字 rect 整体右移
+     *
+     * 文字对齐策略：
+     *   - 无图标：DT_CENTER 居中（保持原视觉）
+     *   - 有图标：DT_LEFT 让 [icon][title] 紧密贴在 tab 左侧 */
+    UINT text_align = DT_CENTER;
+    if (ctx.slot && ctx.slot->icon) {
+        constexpr int kIconSize = 16;
+        int icon_y = ctx.rect.top + ((ctx.rect.bottom - ctx.rect.top) - kIconSize) / 2;
+        ::DrawIconEx(ctx.hdc, text_rc.left, icon_y, ctx.slot->icon,
+                     kIconSize, kIconSize, 0, nullptr, DI_NORMAL);
+        text_rc.left += kIconSize + 6;   /* 6px gap */
+        text_align = DT_LEFT;
+    }
+
     ::DrawTextW(ctx.hdc, title.c_str(), -1, &text_rc,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                text_align | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     ::RestoreDC(ctx.hdc, saved);
 }

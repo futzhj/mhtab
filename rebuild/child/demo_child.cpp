@@ -50,6 +50,7 @@ constexpr UINT MHX_HIDE_VIEW      = WM_APP + 8;
 constexpr UINT MHX_NEW_VIEW       = WM_APP + 16;
 constexpr UINT MHX_CLEANUP_VIEW   = WM_APP + 25;
 constexpr UINT MHX_SHOW_WINDOW    = WM_APP + 26;
+constexpr UINT MHX_SET_TAB_ICON   = WM_APP + 27;   /* W6-2 */
 constexpr UINT MHX_HEARTBEAT      = WM_APP + 200;
 
 /* MHX_FORWARD_INPUT payload (与 IpcProtocol.h InputForwardPayload 对齐) */
@@ -297,6 +298,41 @@ HWND CreateChildWindow(HINSTANCE hInst, ChildState* st, bool embedded) {
 }
 
 /* ============================================================
+ * W6-2: 上报 Tab 图标
+ *
+ * 用 PID 哈希到一个系统图标（IDI_INFORMATION/QUESTION/...），
+ * 不同子进程显示不同图标，便于视觉区分。
+ *
+ * IDI_* 系列是 user32 的系统共享资源，不需要 DestroyIcon。
+ * 主进程会立即 CopyIcon 一份私有副本，所以这里用完即可丢弃引用。
+ * ============================================================ */
+void SendIcon(HWND host, int slot_id) {
+    if (!host || !::IsWindow(host)) return;
+
+    static LPCWSTR kIcons[] = {
+        IDI_INFORMATION, IDI_QUESTION, IDI_EXCLAMATION,
+        IDI_WARNING,     IDI_ASTERISK, IDI_APPLICATION,
+    };
+    DWORD pid = ::GetCurrentProcessId();
+    LPCWSTR pick = kIcons[pid % _countof(kIcons)];
+
+    HICON icon = ::LoadIconW(nullptr, pick);
+    if (!icon) {
+        DbgLog(L"[demo_child] LoadIcon failed\n");
+        return;
+    }
+
+    DWORD_PTR result = 0;
+    ::SendMessageTimeoutW(
+        host, MHX_SET_TAB_ICON,
+        static_cast<WPARAM>(slot_id),
+        reinterpret_cast<LPARAM>(icon),
+        SMTO_ABORTIFHUNG, 1000, &result);
+
+    DbgLog(L"[demo_child] SendIcon: slot=%d icon=%p\n", slot_id, icon);
+}
+
+/* ============================================================
  * 握手
  * ============================================================ */
 void SendHandshake(HWND host, int slot_id, HWND child_hwnd) {
@@ -336,6 +372,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nShowCmd) {
         /* host 在收到 NEW_CLIENT 后会 SetParent + ShowWindow，
          * 子进程不应主动 ShowWindow */
         SendHandshake(g_state.host_hwnd, g_state.slot_id, hwnd);
+        /* W6-2: 握手成功后立即上报 Tab 图标 */
+        SendIcon(g_state.host_hwnd, g_state.slot_id);
     } else {
         ::ShowWindow(hwnd, nShowCmd);
         ::UpdateWindow(hwnd);

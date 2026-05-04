@@ -32,6 +32,11 @@ struct ChildSlot {
     String       exe_path;                    /* 子进程可执行文件路径 */
     String       cmdline;                     /* 启动参数（不含 exe，不含 --mhx-* 注入参数） */
 
+    /* W6-2: Tab 头图标（owner-draw 时绘制在标题前）。
+     * 主进程收到 MHX_SET_TAB_ICON 后用 CopyIcon 复制一份独立副本，
+     * 析构时 DestroyIcon 释放。nullptr 表示无图标，绘制时跳过。 */
+    HICON        icon         = nullptr;
+
     /* 不允许拷贝，避免 hProcess 重复关闭 */
     ChildSlot() = default;
     ChildSlot(const ChildSlot&) = delete;
@@ -41,6 +46,7 @@ struct ChildSlot {
 
     ~ChildSlot() {
         if (hProcess) ::CloseHandle(hProcess);
+        if (icon)     ::DestroyIcon(icon);
     }
 };
 
