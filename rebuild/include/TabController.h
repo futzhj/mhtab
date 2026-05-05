@@ -235,6 +235,23 @@ private:
     LRESULT HandlePreviewMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     /** 注册预览窗口的 WindowClass（首次创建时调用，幂等） */
     static void EnsurePreviewClassRegistered(HINSTANCE hInst);
+
+    /** 预览窗口内 child 缩略图（PrintWindow 拍摄的 HBITMAP，预览窗口生命周期内缓存） */
+    HBITMAP     preview_snapshot_ = nullptr;
+    /** 捕捉 child_hwnd 内容生成缩略图（失败则 preview_snapshot_ 保持 nullptr） */
+    void CapturePreviewSnapshot(HWND child_hwnd);
+
+    /* === 打磨：Tab 之间的 drop 指示线 ===
+     * drag_active_ 状态下鼠标位于 tab_ctrl_ 客户区时计算的"如果现在松手
+     * 就会插入到第 N 条缝"的索引。取值范围 [0, N]（N = tab 总数），-1 表示不显示。
+     * WM_PAINT 走 subclass post-paint 路径叠画一条 3px 宽的垂直线。 */
+    int         drop_indicator_idx_ = -1;
+
+    /** 根据鼠标 tab_ctrl_ 客户坐标重新计算 drop_indicator_idx_
+     *  （返回 true 表示值有变化，需要 Invalidate 重绘） */
+    bool ComputeDropIndicator(int mouse_x, int mouse_y);
+    /** 在 tab_ctrl_ 上叠画一条垂直高亮线指示插入位置 */
+    void DrawDropIndicator();
 };
 
 } /* namespace mhx */

@@ -510,9 +510,16 @@ int TabController::TabIdxToSlotId(int tab_idx) const noexcept {
 
 namespace {
 constexpr const wchar_t* kDragPreviewClass = L"mhx_DragPreview";
-constexpr int kPreviewW = 200;
-constexpr int kPreviewH = 28;
-constexpr BYTE kPreviewAlpha = 0xC0;       /* ~75% */
+/* 预览窗口布局：
+ *   - 顶部 kPreviewHeaderH 高度的 header 区（始终绘制：icon + title 文本）
+ *   - 若成功拍到 child 缩略图 → 扩展高度到 kPreviewHFull，下方为缩略图区
+ *   - 拍摄失败（child 是 OpenGL/D3D 等无法 PrintWindow 的窗口）
+ *     → 仅保留 header，高度退回 kPreviewHHeader，和以前一样 */
+constexpr int  kPreviewW          = 240;
+constexpr int  kPreviewHHeader    = 28;
+constexpr int  kPreviewHFull      = 140;
+constexpr int  kPreviewThumbMargin = 4;
+constexpr BYTE kPreviewAlpha      = 0xC0;    /* ~75% */
 } /* namespace */
 
 void TabController::EnsurePreviewClassRegistered(HINSTANCE hInst) {
@@ -559,46 +566,70 @@ LRESULT TabController::HandlePreviewMessage(
             RECT rc = {};
             ::GetClientRect(hwnd, &rc);
 
-            /* 背景：用主题的"selected"色（与正常 tab 选中态色一致） */
-            COLORREF bg = RGB(0x00, 0x78, 0xD4);     /* fallback */
+            COLORREF bg = RGB(0x00, 0x78, 0xD4);     /* fallback 蓝 */
             COLORREF fg = RGB(0xFF, 0xFF, 0xFF);
-            if (theme_) {
-                /* ITheme 没暴露 sel_bg 直接接口，用 client_bg 反色或固定值都可。
-                 * 这里直接用 hard-coded 色（主题切换不会影响预览，可接受） */
+
+            /* 计算 header / thumbnail 两个子区域 */
+            const bool has_thumb = (preview_snapshot_ != nullptr);
+            RECT header_rc = rc;
+            RECT thumb_rc  = {};
+            if (has_thumb) {
+                header_rc.bottom = rc.top + kPreviewHHeader;
+                thumb_rc = rc;
+                thumb_rc.top = header_rc.bottom;
             }
 
+            /* 1. header 背景：蓝色 */
             HBRUSH br = ::CreateSolidBrush(bg);
-            ::FillRect(hdc, &rc, br);
+            ::FillRect(hdc, &header_rc, br);
             ::DeleteObject(br);
 
-            /* 1px 白色边框 */
+            /* 2. thumbnail 背景 + 缩略图（若有） */
+            if (has_thumb) {
+                HBRUSH thumb_bg = ::CreateSolidBrush(RGB(0x1E, 0x1E, 0x1E));
+                ::FillRect(hdc, &thumb_rc, thumb_bg);
+                ::DeleteObject(thumb_bg);
+
+                /* BitBlt 快照到 thumb 区域，居中 kPreviewThumbMargin 边距 */
+                HDC mem_dc = ::CreateCompatibleDC(hdc);
+                HGDIOBJ prev = ::SelectObject(mem_dc, preview_snapshot_);
+                BITMAP bm = {};
+                ::GetObjectW(preview_snapshot_, sizeof(bm), &bm);
+                int x = thumb_rc.left + kPreviewThumbMargin;
+                int y = thumb_rc.top  + kPreviewThumbMargin;
+                ::BitBlt(hdc, x, y, bm.bmWidth, bm.bmHeight,
+                         mem_dc, 0, 0, SRCCOPY);
+                ::SelectObject(mem_dc, prev);
+                ::DeleteDC(mem_dc);
+            }
+
+            /* 3. 整体 1px 白色外边框 */
             ::FrameRect(hdc, &rc, (HBRUSH)::GetStockObject(WHITE_BRUSH));
 
-            /* 标题 + 图标：从 preview_tab_idx_ 反查 slot */
+            /* 4. header：icon + title 文字（与 Tab 绘制布局一致） */
             String title = L"Tab";
             HICON  icon  = nullptr;
             int sid = TabIdxToSlotId(preview_tab_idx_);
             if (sid >= 0) {
                 if (auto* s = FindSlot(sid)) {
                     if (!s->title.empty()) title = s->title;
-                    icon = s->icon;         /* 可能 nullptr */
+                    icon = s->icon;
                 }
             }
 
             ::SetBkMode(hdc, TRANSPARENT);
             ::SetTextColor(hdc, fg);
-            RECT text_rc = rc;
+            RECT text_rc = header_rc;
             text_rc.left  += 8;
             text_rc.right -= 8;
 
-            /* 图标存在时：左侧 16x16 居中竖向绘制，文字整体右移
-             * 参考 Theme.cpp DrawTabWithScheme 的布局规则，保持一致 */
             if (icon) {
                 constexpr int kIconSize = 16;
-                int icon_y = rc.top + ((rc.bottom - rc.top) - kIconSize) / 2;
+                int icon_y = header_rc.top +
+                             ((header_rc.bottom - header_rc.top) - kIconSize) / 2;
                 ::DrawIconEx(hdc, text_rc.left, icon_y, icon,
                              kIconSize, kIconSize, 0, nullptr, DI_NORMAL);
-                text_rc.left += kIconSize + 6;   /* 6px gap 与 Tab 绘制保持一致 */
+                text_rc.left += kIconSize + 6;
             }
 
             ::DrawTextW(hdc, title.c_str(), -1, &text_rc,
@@ -622,6 +653,19 @@ void TabController::CreateDragPreview(int tab_idx) {
     EnsurePreviewClassRegistered(hInstance_);
     preview_tab_idx_ = tab_idx;
 
+    /* 打磨：先尝试给对应 child 拍个缩略图。
+     * 拍摄成功 → 预览窗口拉大到 kPreviewHFull（带缩略图）
+     * 拍摄失败 → 退回 header-only 尺寸 kPreviewHHeader（兼容 OpenGL/D3D 等 child） */
+    HWND child_for_snap = nullptr;
+    int  sid = TabIdxToSlotId(tab_idx);
+    if (sid >= 0) {
+        if (auto* s = FindSlot(sid)) child_for_snap = s->child_hwnd;
+    }
+    if (child_for_snap && ::IsWindow(child_for_snap)) {
+        CapturePreviewSnapshot(child_for_snap);
+    }
+    int height = preview_snapshot_ ? kPreviewHFull : kPreviewHHeader;
+
     DWORD style    = WS_POPUP;
     DWORD ex_style = WS_EX_LAYERED | WS_EX_TOOLWINDOW
                    | WS_EX_TOPMOST | WS_EX_NOACTIVATE
@@ -630,11 +674,16 @@ void TabController::CreateDragPreview(int tab_idx) {
     preview_hwnd_ = ::CreateWindowExW(
         ex_style, kDragPreviewClass, L"",
         style,
-        0, 0, kPreviewW, kPreviewH,
+        0, 0, kPreviewW, height,
         nullptr, nullptr, hInstance_, this);
     if (!preview_hwnd_) {
         MHX_LOG_WARN(L"CreateDragPreview: CreateWindowExW failed: %lu",
                      ::GetLastError());
+        /* 回滚缩略图 */
+        if (preview_snapshot_) {
+            ::DeleteObject(preview_snapshot_);
+            preview_snapshot_ = nullptr;
+        }
         return;
     }
 
@@ -655,10 +704,223 @@ void TabController::MoveDragPreview(POINT screen_pt) {
 }
 
 void TabController::DestroyDragPreview() {
-    if (!preview_hwnd_) return;
-    ::DestroyWindow(preview_hwnd_);
-    preview_hwnd_ = nullptr;
+    if (preview_hwnd_) {
+        ::DestroyWindow(preview_hwnd_);
+        preview_hwnd_ = nullptr;
+    }
     preview_tab_idx_ = -1;
+    if (preview_snapshot_) {
+        ::DeleteObject(preview_snapshot_);
+        preview_snapshot_ = nullptr;
+    }
+}
+
+/* ============================================================
+ * 打磨：CapturePreviewSnapshot
+ *
+ * 给 child_hwnd 拍一个 kPreviewW - 2*margin 宽的缩略图。
+ * 优先用 PrintWindow(PW_RENDERFULLCONTENT, Win10 1803+)，
+ * fallback 到 PW_CLIENTONLY（老系统或某些 child 不支持 full content）。
+ *
+ * 失败场景（正常容错）：
+ *   - child_hwnd 未绘制过（IsWindowVisible==FALSE）
+ *   - child 是 OpenGL / D3D 等用特殊表面绘制的窗口 → 拍到黑块
+ *   - child 进程已退出
+ * 任何失败都安全：保持 preview_snapshot_ = nullptr，上层回退到 header-only。
+ * ============================================================ */
+/* ============================================================
+ * 打磨：Drop Indicator
+ *
+ * 拖拽中根据鼠标客户坐标 (mouse_x, mouse_y) 决定"若现在松手会
+ * 插到第 N 条缝"。取值：
+ *   0    → 所有 tabs 最左侧（插到首位）
+ *   1..N-1 → 第 (idx-1) 和 idx 号 tab 之间
+ *   N    → 最后一个 tab 的右侧（追加到尾）
+ *   -1   → 不显示（鼠标不在 tab bar 上）
+ *
+ * 判断规则：鼠标 x 过被命中 tab 的中线则 insert = hit+1，否则 hit。
+ * 不在任何 tab 上但在 tab bar 水平范围内 → 按 x 归类到就近缝隙。
+ * ============================================================ */
+bool TabController::ComputeDropIndicator(int mouse_x, int mouse_y) {
+    if (!tab_ctrl_) return false;
+
+    int tab_count = TabCtrl_GetItemCount(tab_ctrl_);
+    if (tab_count <= 0) {
+        if (drop_indicator_idx_ == -1) return false;
+        drop_indicator_idx_ = -1;
+        return true;
+    }
+
+    RECT bar_rc = {};
+    ::GetClientRect(tab_ctrl_, &bar_rc);
+
+    /* Tab bar 只有 TabCtrl 顶部 head 区；鼠标 y 超出 item0 的 rect 底部则隐藏 */
+    RECT first_rc = {};
+    TabCtrl_GetItemRect(tab_ctrl_, 0, &first_rc);
+    if (mouse_y < first_rc.top || mouse_y > first_rc.bottom) {
+        if (drop_indicator_idx_ == -1) return false;
+        drop_indicator_idx_ = -1;
+        return true;
+    }
+
+    int new_idx = -1;
+    int hit = HitTestTab(mouse_x, mouse_y);
+    if (hit >= 0) {
+        RECT r = {};
+        if (TabCtrl_GetItemRect(tab_ctrl_, hit, &r)) {
+            int mid = (r.left + r.right) / 2;
+            new_idx = (mouse_x < mid) ? hit : hit + 1;
+        }
+    } else {
+        /* 鼠标在 tab bar 水平范围但没命中任何 tab：
+         * - 在最左 tab 左侧 → idx 0
+         * - 在最右 tab 右侧 → idx N
+         * - 落在两个 tab 的水平间隙 → 取前者 idx+1 */
+        RECT last_rc = {};
+        TabCtrl_GetItemRect(tab_ctrl_, tab_count - 1, &last_rc);
+        if (mouse_x <= first_rc.left)       new_idx = 0;
+        else if (mouse_x >= last_rc.right)  new_idx = tab_count;
+        else {
+            for (int i = 0; i + 1 < tab_count; ++i) {
+                RECT a{}, b{};
+                TabCtrl_GetItemRect(tab_ctrl_, i,     &a);
+                TabCtrl_GetItemRect(tab_ctrl_, i + 1, &b);
+                if (mouse_x >= a.right && mouse_x <= b.left) {
+                    new_idx = i + 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (new_idx == drop_indicator_idx_) return false;
+    drop_indicator_idx_ = new_idx;
+    return true;
+}
+
+/* ============================================================
+ * 在 tab_ctrl_ 上叠画一条 3px 宽的垂直蓝线。
+ * 调用时机：HandleTabMessage WM_PAINT 路径，DefSubclassProc 之后。
+ * 不走 BeginPaint/EndPaint（避免清空刚画完的 tabs）；直接 GetDC + ReleaseDC。
+ * ============================================================ */
+void TabController::DrawDropIndicator() {
+    if (!tab_ctrl_ || drop_indicator_idx_ < 0) return;
+    int tab_count = TabCtrl_GetItemCount(tab_ctrl_);
+    if (tab_count <= 0) return;
+
+    /* 定位画线 x 坐标：
+     *   idx == 0          → 第一个 tab 的 left
+     *   idx in [1, N-1]   → 第 idx-1 和 idx 号 tab 的缝隙中点
+     *   idx == N          → 最后一个 tab 的 right */
+    int x = 0;
+    int top, bottom;
+    if (drop_indicator_idx_ == 0) {
+        RECT r = {};
+        TabCtrl_GetItemRect(tab_ctrl_, 0, &r);
+        x = r.left;
+        top = r.top;
+        bottom = r.bottom;
+    } else if (drop_indicator_idx_ >= tab_count) {
+        RECT r = {};
+        TabCtrl_GetItemRect(tab_ctrl_, tab_count - 1, &r);
+        x = r.right;
+        top = r.top;
+        bottom = r.bottom;
+    } else {
+        RECT a{}, b{};
+        TabCtrl_GetItemRect(tab_ctrl_, drop_indicator_idx_ - 1, &a);
+        TabCtrl_GetItemRect(tab_ctrl_, drop_indicator_idx_,     &b);
+        x = (a.right + b.left) / 2;
+        top    = (a.top    < b.top)    ? a.top    : b.top;
+        bottom = (a.bottom > b.bottom) ? a.bottom : b.bottom;
+    }
+
+    /* 3px 蓝色竖线：HDC 直接 FillRect 不触发 invalidation */
+    HDC hdc = ::GetDC(tab_ctrl_);
+    if (!hdc) return;
+    RECT line = { x - 1, top, x + 2, bottom };
+    HBRUSH br = ::CreateSolidBrush(RGB(0x00, 0x78, 0xD4));
+    ::FillRect(hdc, &line, br);
+    ::DeleteObject(br);
+    ::ReleaseDC(tab_ctrl_, hdc);
+}
+
+void TabController::CapturePreviewSnapshot(HWND child_hwnd) {
+    if (preview_snapshot_) {
+        ::DeleteObject(preview_snapshot_);
+        preview_snapshot_ = nullptr;
+    }
+    if (!child_hwnd || !::IsWindow(child_hwnd)) return;
+
+    /* 缩略图目标尺寸：填满 preview 窗口缩略图区域 */
+    int dst_w = kPreviewW - 2 * kPreviewThumbMargin;
+    int dst_h = kPreviewHFull - kPreviewHHeader - 2 * kPreviewThumbMargin;
+    if (dst_w <= 0 || dst_h <= 0) return;
+
+    /* 取 child 原始客户区尺寸，用于计算 letter-box 比例 */
+    RECT child_rc = {};
+    ::GetClientRect(child_hwnd, &child_rc);
+    int src_w = child_rc.right  - child_rc.left;
+    int src_h = child_rc.bottom - child_rc.top;
+    if (src_w <= 0 || src_h <= 0) return;
+
+    /* 先把 child 绘制到一个和 child 客户区同尺寸的临时位图，
+     * 然后 StretchBlt 到最终缩略图，保持等比 + letter-box 背景 */
+    HDC screen_dc = ::GetDC(nullptr);
+    if (!screen_dc) return;
+    HDC src_dc = ::CreateCompatibleDC(screen_dc);
+    HDC dst_dc = ::CreateCompatibleDC(screen_dc);
+    HBITMAP src_bmp = ::CreateCompatibleBitmap(screen_dc, src_w, src_h);
+    HBITMAP dst_bmp = ::CreateCompatibleBitmap(screen_dc, dst_w, dst_h);
+    ::ReleaseDC(nullptr, screen_dc);
+
+    bool ok = false;
+    if (src_dc && dst_dc && src_bmp && dst_bmp) {
+        HGDIOBJ prev_src = ::SelectObject(src_dc, src_bmp);
+        HGDIOBJ prev_dst = ::SelectObject(dst_dc, dst_bmp);
+
+        /* 背景预填充一次深色，避免 StretchBlt letter-box 区域露出未初始化像素 */
+        RECT dst_rect = { 0, 0, dst_w, dst_h };
+        HBRUSH bg = ::CreateSolidBrush(RGB(0x20, 0x20, 0x20));
+        ::FillRect(dst_dc, &dst_rect, bg);
+        ::DeleteObject(bg);
+
+        /* PrintWindow：PW_RENDERFULLCONTENT (0x2) 在 Win10 1803+ 才定义。
+         * 若不支持，GDI 会忽略该位 → 相当于 PW_CLIENTONLY（第 0 位）。 */
+        constexpr UINT kPwFullContent = 0x00000002;
+        BOOL printed = ::PrintWindow(child_hwnd, src_dc, kPwFullContent);
+
+        if (printed) {
+            /* 等比缩放到 dst_w x dst_h 并居中 */
+            /* 等比缩放：取两方向缩放系数的小值，避免越界 */
+            double sx = (double)dst_w / (double)src_w;
+            double sy = (double)dst_h / (double)src_h;
+            double scale = (sx < sy) ? sx : sy;
+            int draw_w = (int)(src_w * scale);
+            int draw_h = (int)(src_h * scale);
+            int off_x  = (dst_w - draw_w) / 2;
+            int off_y  = (dst_h - draw_h) / 2;
+
+            ::SetStretchBltMode(dst_dc, HALFTONE);
+            ::SetBrushOrgEx(dst_dc, 0, 0, nullptr);
+            ::StretchBlt(dst_dc, off_x, off_y, draw_w, draw_h,
+                         src_dc, 0, 0, src_w, src_h, SRCCOPY);
+            ok = true;
+        }
+
+        ::SelectObject(src_dc, prev_src);
+        ::SelectObject(dst_dc, prev_dst);
+    }
+
+    if (src_dc)  ::DeleteDC(src_dc);
+    if (dst_dc)  ::DeleteDC(dst_dc);
+    if (src_bmp) ::DeleteObject(src_bmp);
+
+    if (ok) {
+        preview_snapshot_ = dst_bmp;
+    } else if (dst_bmp) {
+        ::DeleteObject(dst_bmp);
+    }
 }
 
 /* ============================================================
@@ -673,7 +935,16 @@ LRESULT CALLBACK TabController::TabSubclassProc(
         LRESULT r = self->HandleTabMessage(msg, wp, lp);
         if (r != 0) return r;   /* 已处理 */
     }
-    return ::DefSubclassProc(hwnd, msg, wp, lp);
+    LRESULT def_ret = ::DefSubclassProc(hwnd, msg, wp, lp);
+
+    /* 打磨：WM_PAINT 后做一次 post-paint 叠画 drop indicator。
+     * 必须放在 DefSubclassProc 之后，让 OnDrawItem 先把所有 tab 画完，
+     * 否则 indicator 会被 tab 自己的绘制覆盖掉。 */
+    if (self && msg == WM_PAINT &&
+        self->drag_active_ && self->drop_indicator_idx_ >= 0) {
+        self->DrawDropIndicator();
+    }
+    return def_ret;
 }
 
 /* ============================================================
@@ -739,6 +1010,11 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
                     POINT screen_pt;
                     ::GetCursorPos(&screen_pt);
                     MoveDragPreview(screen_pt);
+
+                    /* 打磨：更新 drop indicator。变化才 invalidate 以减少闪烁 */
+                    if (ComputeDropIndicator(x, y)) {
+                        ::InvalidateRect(tab_ctrl_, nullptr, FALSE);
+                    }
                 }
             }
             return 0;
@@ -748,6 +1024,12 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
             if (drag_active_) {
                 /* P3: 先销毁预览窗口，无论后面走重排还是 detach 都不再显示 */
                 DestroyDragPreview();
+
+                /* 打磨：缓存 indicator 并清除，后面的 ReorderTabs 可以复用更精确的位置
+                 * （比仅靠 HitTestTab 得到的命中 tab 更直观，Chrome 行为一致） */
+                int indicator = drop_indicator_idx_;
+                drop_indicator_idx_ = -1;
+                ::InvalidateRect(tab_ctrl_, nullptr, FALSE);
 
                 /* P2: 屏幕级判定 - 鼠标松开点是否在主窗口 GetWindowRect 内
                  *   - 在内 → 现有重排逻辑
@@ -763,10 +1045,24 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 }
 
                 if (inside) {
-                    /* 重排：把屏幕坐标转回 tab_ctrl_ 客户区做 hit test */
-                    POINT local = screen_pt;
-                    ::ScreenToClient(tab_ctrl_, &local);
-                    int dst = HitTestTab(local.x, local.y);
+                    /* 重排：优先用 drop_indicator_idx_（更精确），
+                     * 回退到 HitTestTab（老路径，保持兼容） */
+                    int dst = -1;
+                    if (indicator >= 0) {
+                        /* indicator 是"缝隙索引"，0..N。要把 src 插入到第 indicator 条缝：
+                         *   - indicator <= src  → 目标 tab_index 就是 indicator
+                         *   - indicator >  src  → 减 1，因为移除 src 后缝隙整体左移 */
+                        int n = TabCtrl_GetItemCount(tab_ctrl_);
+                        int target = indicator;
+                        if (target > drag_src_idx_) target -= 1;
+                        if (target < 0) target = 0;
+                        if (target >= n) target = n - 1;
+                        dst = target;
+                    } else {
+                        POINT local = screen_pt;
+                        ::ScreenToClient(tab_ctrl_, &local);
+                        dst = HitTestTab(local.x, local.y);
+                    }
                     if (dst >= 0 && dst != drag_src_idx_) {
                         ReorderTabs(drag_src_idx_, dst);
                     }
@@ -795,6 +1091,10 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
         case WM_CAPTURECHANGED:
             /* P3: 异常打断（如 Alt+Tab 切走焦点）也要清掉预览 */
             DestroyDragPreview();
+            if (drop_indicator_idx_ >= 0) {
+                drop_indicator_idx_ = -1;
+                ::InvalidateRect(tab_ctrl_, nullptr, FALSE);
+            }
             drag_armed_   = false;
             drag_active_  = false;
             drag_src_idx_ = -1;
