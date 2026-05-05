@@ -130,6 +130,28 @@ inline LRESULT SendSetTabIcon(HWND host, int slot_id, HICON icon,
     return r ? static_cast<LRESULT>(result) : 0;
 }
 
+/**
+ * W6-bugfix: 请求主进程把自己（一个已 detach 的独立窗口）重新嵌入 Tab。
+ *
+ * 返回值语义：
+ *   >= 0  主进程新分配的 slot_id，子进程应把 state.slot_id 更新为这个值
+ *   -1    主进程拒绝（比如 child_hwnd 无效 / 超过 max_children / OpenProcess 失败）
+ *
+ * 用 SendMessageTimeoutW 同步获取返回值。timeout 给得比较宽（3s），
+ * 因为主进程这一步涉及 OpenProcess + SetParent + InsertItem 较重。
+ */
+inline int SendReembedRequest(HWND host, HWND child_hwnd,
+                               UINT timeout_ms = 3000) {
+    if (!host || !::IsWindow(host)) return -1;
+    DWORD_PTR result = 0;
+    LRESULT r = ::SendMessageTimeoutW(
+        host, MHX_REMBED_REQUEST,
+        reinterpret_cast<WPARAM>(child_hwnd), 0,
+        SMTO_ABORTIFHUNG, timeout_ms, &result);
+    if (!r) return -1;
+    return static_cast<int>(static_cast<intptr_t>(result));
+}
+
 /* ============================================================
  * 协议封装：主→子
  * ============================================================ */

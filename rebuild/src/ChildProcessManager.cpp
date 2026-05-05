@@ -6,6 +6,8 @@
 #include "TabController.h"
 #include "Utils.h"
 
+#include <algorithm>
+
 namespace mhx {
 
 ChildProcessManager::ChildProcessManager(TabController& tab_ctrl)
@@ -209,6 +211,77 @@ bool ChildProcessManager::DetachSlot(int slot_id) {
     MHX_LOG_INFO(L"DetachSlot: slot=%d pid=%lu (wait handle released)",
                  slot_id, slot->pid);
     return true;
+}
+
+/* ============================================================
+ * W6-bugfix: AdoptExternalWindow
+ *
+ * 重新"领养"一个已脱离的 child 窗口，让它再次被 Tab 容纳。
+ *
+ * 关键点：
+ *   - GetWindowThreadProcessId 从 HWND 反查 pid
+ *   - OpenProcess 必须包含 SYNCHRONIZE 权限，否则 wait handle 等不到 signal
+ *     （Win7+ 起普通进程也不会拒绝 SYNCHRONIZE；同 integrity level 一般都能）
+ *   - 拿不到 hProcess 也不算致命错误：tab 还是能嵌入，只是 Poll 探测不到进程退出
+ *     必须在 child_hwnd 自然销毁时由 IPC 清理（MHX_CLEANUP_VIEW）
+ * ============================================================ */
+int ChildProcessManager::AdoptExternalWindow(HWND child_hwnd, const String& title) {
+    if (!child_hwnd || !::IsWindow(child_hwnd)) {
+        MHX_LOG_WARN(L"AdoptExternalWindow: invalid hwnd");
+        return -1;
+    }
+    if (static_cast<int>(GetActiveCount()) >= max_children_) {
+        MHX_LOG_WARN(L"AdoptExternalWindow rejected: max_children=%d reached", max_children_);
+        return -1;
+    }
+
+    /* 1. 反查 pid */
+    DWORD pid = 0;
+    ::GetWindowThreadProcessId(child_hwnd, &pid);
+    if (pid == 0) {
+        MHX_LOG_WARN(L"AdoptExternalWindow: GetWindowThreadProcessId failed");
+        return -1;
+    }
+
+    /* 2. OpenProcess（SYNCHRONIZE 让 wait handle 工作）
+     *    失败时不回绝 embed，仅跳过 wait 跟踪 */
+    HANDLE hProc = ::OpenProcess(
+        SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+        FALSE, pid);
+    if (!hProc) {
+        MHX_LOG_WARN(L"AdoptExternalWindow: OpenProcess(pid=%lu) failed: %s",
+                     pid, utils::FormatSystemError(::GetLastError()).c_str());
+        /* 继续：hProc=nullptr，不加入 wait_handles_ */
+    }
+
+    /* 3. 准备 slot 并交给 TabController */
+    ChildSlot slot;
+    slot.hProcess = hProc;
+    slot.pid      = pid;
+    slot.title    = title.empty()
+                    ? utils::Format(L"Reembed %zu", tab_ctrl_.GetActiveCount() + 1)
+                    : title;
+    slot.state    = ChildState::Starting;
+    int slot_id = tab_ctrl_.AddSlot(std::move(slot));
+    if (slot_id < 0) {
+        if (hProc) ::CloseHandle(hProc);
+        return -1;
+    }
+
+    /* 4. SetParent + 插入 Tab */
+    if (!tab_ctrl_.EmbedChildWindow(slot_id, child_hwnd)) {
+        MHX_LOG_ERROR(L"AdoptExternalWindow: EmbedChildWindow failed");
+        tab_ctrl_.RemoveSlot(slot_id);
+        /* hProcess 归 ChildSlot 析构 CloseHandle */
+        return -1;
+    }
+
+    /* 5. 注册 wait handle（hProc 可能 nullptr） */
+    if (hProc) AddWaitHandle(hProc);
+
+    MHX_LOG_INFO(L"AdoptExternalWindow OK: slot=%d pid=%lu hwnd=%p",
+                 slot_id, pid, child_hwnd);
+    return slot_id;
 }
 
 /* ============================================================

@@ -77,6 +77,20 @@ public:
      */
     bool DetachSlot(int slot_id);
 
+    /**
+     * W6-bugfix: 领养一个已存在的外部子进程窗口（通常是之前 DetachSlot 的回流）。
+     *
+     * 步骤：
+     *   1. GetWindowThreadProcessId(child_hwnd) 反查 pid
+     *   2. OpenProcess 获取 SYNCHRONIZE 权限的 hProcess，加入 wait handles
+     *   3. 构造 ChildSlot(hProcess, pid, child_hwnd, title) 交给 TabController
+     *   4. 调用 TabController::EmbedChildWindow 嵌入到 Tab
+     *
+     * @return 成功时新分配的 slot_id；失败 -1
+     *         （child_hwnd 无效 / 已达 max_children / OpenProcess 权限不足 等）
+     */
+    int AdoptExternalWindow(HWND child_hwnd, const String& title);
+
     /** 返回当前活跃子进程数 */
     size_t GetActiveCount() const noexcept;
 

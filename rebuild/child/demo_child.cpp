@@ -51,6 +51,7 @@ constexpr UINT MHX_NEW_VIEW       = WM_APP + 16;
 constexpr UINT MHX_CLEANUP_VIEW   = WM_APP + 25;
 constexpr UINT MHX_SHOW_WINDOW    = WM_APP + 26;
 constexpr UINT MHX_SET_TAB_ICON   = WM_APP + 27;   /* W6-2 */
+constexpr UINT MHX_REMBED_REQUEST = WM_APP + 28;   /* W6-bugfix: reembed 请求 */
 constexpr UINT MHX_HEARTBEAT      = WM_APP + 200;
 
 /* MHX_FORWARD_INPUT payload (与 IpcProtocol.h InputForwardPayload 对齐) */
@@ -157,7 +158,8 @@ void PaintBody(HWND hwnd, HDC hdc, ChildState* st) {
                  L"HWND   = %p\n"
                  L"slot   = %d\n"
                  L"keys   = %d\n\n"
-                 L"按 ESC 通知 host 清理本 Tab",
+                 L"ESC: 通知 host 清理本 Tab\n"
+                 L"F6 : 合并回 mhtabx 主窗口",
                  st->is_active ? L"active" : L"inactive",
                  pid, hwnd, st->slot_id, st->key_count);
 
@@ -231,6 +233,25 @@ LRESULT CALLBACK ChildWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                    static_cast<WPARAM>(st->slot_id), 0);
                 }
                 ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                return 0;
+            }
+            /* W6-bugfix: F6 请求合并回主窗口（detach 的反向操作） */
+            if (wp == VK_F6) {
+                if (st && st->host_hwnd && ::IsWindow(st->host_hwnd)) {
+                    DWORD_PTR result = 0;
+                    LRESULT r = ::SendMessageTimeoutW(
+                        st->host_hwnd, MHX_REMBED_REQUEST,
+                        reinterpret_cast<WPARAM>(hwnd), 0,
+                        SMTO_ABORTIFHUNG, 3000, &result);
+                    if (r && static_cast<intptr_t>(result) >= 0) {
+                        /* host 返回新 slot_id，更新本地状态 */
+                        st->slot_id = static_cast<int>(static_cast<intptr_t>(result));
+                        DbgLog(L"[demo_child] reembed OK: new slot=%d\n", st->slot_id);
+                    } else {
+                        DbgLog(L"[demo_child] reembed failed: result=%lld\n",
+                               (long long)result);
+                    }
+                }
                 return 0;
             }
             break;

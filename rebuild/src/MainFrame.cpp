@@ -189,6 +189,7 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case MHX_NEW_VIEW:      return OnNewView(wp, lp);
         case MHX_CLEANUP_VIEW:  return OnCleanupView(wp, lp);
         case MHX_SET_TAB_ICON:  return OnSetTabIcon(wp, lp);   /* W6-2 */
+        case MHX_REMBED_REQUEST: return OnRembedRequest(wp, lp); /* W6-bugfix */
         case MHX_HEARTBEAT:     return TRUE;   /* 子进程发的兼容情况 */
 
         case kMsgPostInit:
@@ -554,6 +555,48 @@ LRESULT MainFrame::OnSetTabIcon(WPARAM slot_id_w, LPARAM icon_l) {
     MHX_LOG_INFO(L"OnSetTabIcon: slot=%d icon=%p (copied=%p)",
                  sid, src, slot->icon);
     return TRUE;
+}
+
+/* ============================================================
+ * W6-bugfix: OnRembedRequest
+ *
+ * 子进程（之前 detach 过的独立窗口）请求合并回 Tab。
+ *
+ * 流程：
+ *   1. 把 child_hwnd 恢复为 child 风格（去 WS_OVERLAPPEDWINDOW、加 WS_CHILD）
+ *      — 这步在 TabController::EmbedChildWindow 里已经做过，会覆盖 orig_style
+ *   2. child_mgr_->AdoptExternalWindow 分配新 slot + OpenProcess + EmbedChildWindow
+ *   3. 注册到 heartbeat
+ *   4. 返回新 slot_id 给子进程
+ *
+ * 子进程收到返回值后要把自己本地的 state.slot_id 更新为新值。
+ * ============================================================ */
+LRESULT MainFrame::OnRembedRequest(WPARAM child_hwnd_w, LPARAM /*lp*/) {
+    HWND child_hwnd = reinterpret_cast<HWND>(child_hwnd_w);
+    if (!child_mgr_ || !tab_ctrl_) return -1;
+
+    /* 用窗口标题作为 Tab 初始 title（如果 child 有意义的 caption） */
+    wchar_t title_buf[128] = {};
+    ::GetWindowTextW(child_hwnd, title_buf, _countof(title_buf));
+    String title = title_buf;
+
+    int new_slot_id = child_mgr_->AdoptExternalWindow(child_hwnd, title);
+    if (new_slot_id < 0) {
+        MHX_LOG_WARN(L"OnRembedRequest: AdoptExternalWindow failed hwnd=%p",
+                     child_hwnd);
+        return -1;
+    }
+
+    /* 心跳重新跟踪 */
+    if (heartbeat_) heartbeat_->RegisterSlot(new_slot_id);
+
+    /* 立即发 ACTIVATE_VIEW 让 child 进入 active 态 */
+    ipc::PostActivateView(child_hwnd, new_slot_id);
+
+    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    MHX_LOG_INFO(L"OnRembedRequest: hwnd=%p -> new slot_id=%d",
+                 child_hwnd, new_slot_id);
+    return static_cast<LRESULT>(new_slot_id);
 }
 
 /* ============================================================

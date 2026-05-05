@@ -75,6 +75,7 @@ private:
     LRESULT OnNewView(WPARAM slot_id, LPARAM hint);
     LRESULT OnCleanupView(WPARAM slot_id, LPARAM lp);
     LRESULT OnSetTabIcon(WPARAM slot_id, LPARAM icon);   /* W6-2 */
+    LRESULT OnRembedRequest(WPARAM child_hwnd, LPARAM lp); /* W6-bugfix: 合并回主窗口 */
 
     /* 键盘输入转发到当前 active 子窗口 */
     bool ForwardKeyToActiveChild(UINT msg, WPARAM wp, LPARAM lp);
