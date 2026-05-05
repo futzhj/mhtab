@@ -574,20 +574,33 @@ LRESULT TabController::HandlePreviewMessage(
             /* 1px 白色边框 */
             ::FrameRect(hdc, &rc, (HBRUSH)::GetStockObject(WHITE_BRUSH));
 
-            /* 标题：从 preview_tab_idx_ 反查 slot title */
+            /* 标题 + 图标：从 preview_tab_idx_ 反查 slot */
             String title = L"Tab";
+            HICON  icon  = nullptr;
             int sid = TabIdxToSlotId(preview_tab_idx_);
             if (sid >= 0) {
                 if (auto* s = FindSlot(sid)) {
                     if (!s->title.empty()) title = s->title;
+                    icon = s->icon;         /* 可能 nullptr */
                 }
             }
 
             ::SetBkMode(hdc, TRANSPARENT);
             ::SetTextColor(hdc, fg);
             RECT text_rc = rc;
-            text_rc.left += 8;
+            text_rc.left  += 8;
             text_rc.right -= 8;
+
+            /* 图标存在时：左侧 16x16 居中竖向绘制，文字整体右移
+             * 参考 Theme.cpp DrawTabWithScheme 的布局规则，保持一致 */
+            if (icon) {
+                constexpr int kIconSize = 16;
+                int icon_y = rc.top + ((rc.bottom - rc.top) - kIconSize) / 2;
+                ::DrawIconEx(hdc, text_rc.left, icon_y, icon,
+                             kIconSize, kIconSize, 0, nullptr, DI_NORMAL);
+                text_rc.left += kIconSize + 6;   /* 6px gap 与 Tab 绘制保持一致 */
+            }
+
             ::DrawTextW(hdc, title.c_str(), -1, &text_rc,
                         DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 

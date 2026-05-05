@@ -88,9 +88,13 @@ public:
      *   2. 已 DetachSlot 释放 wait handle（不再 wait 该 pid）
      * 之后 child 在新 mhtabx 接管前是一个独立的顶层窗口；接管后变 child。
      *
+     * @param child_hwnd  要接管的子窗口
+     * @param spawn_at    可选：新 mhtabx 主窗口出现的屏幕坐标（左上角）
+     *                    nullptr 则使用 Win32 CW_USEDEFAULT 默认位置。
+     *                    拖拽 detach 时通常是鼠标松手点减去 Tab Bar 偏移。
      * @return true 成功启动新进程；false CreateProcess 失败
      */
-    bool SpawnDetachedInstance(HWND child_hwnd);
+    bool SpawnDetachedInstance(HWND child_hwnd, const POINT* spawn_at = nullptr);
 
     /**
      * W6-bugfix: 领养一个已存在的外部子进程窗口（通常是之前 DetachSlot 的回流）。

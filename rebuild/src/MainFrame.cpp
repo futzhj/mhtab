@@ -733,7 +733,11 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
             tab_ctrl_->DetachSlot(sid);
 
             if (child_hwnd && ::IsWindow(child_hwnd)) {
-                if (!child_mgr_->SpawnDetachedInstance(child_hwnd)) {
+                /* 键盘菜单触发的 detach：让新窗口出现在鼠标当前位置
+                 * 比 CW_USEDEFAULT 更直观 */
+                POINT cur;
+                ::GetCursorPos(&cur);
+                if (!child_mgr_->SpawnDetachedInstance(child_hwnd, &cur)) {
                     /* 启动新进程失败：child 已经独立顶层显示，至少不会卡死。
                      * 用户可以手动 F6 合并回任意 mhtabx 实例。 */
                     MHX_LOG_WARN(L"SpawnDetachedInstance failed; child remains top-level");
@@ -889,9 +893,15 @@ void MainFrame::OnTabDragOut(int slot_id, POINT screen_pt) {
         }
     }
 
-    /* 3. 不是跨合并 → 启动新 mhtabx 接管 */
+    /* 3. 不是跨合并 → 启动新 mhtabx 接管
+     *
+     * 把鼠标松手点作为新窗口期望左上角。稍微向左上偏移让鼠标仍能
+     * 落在新主窗口 Tab Bar 附近而不是标题栏里，类似 Chrome 行为。
+     * 偏移值走 DPI 无关的保守常量（32px 左、8px 上），主窗口本身会
+     * 在 OnPostInit 里做 work-area 裁剪，防止跑到屏幕外。 */
     if (!cross_merge) {
-        if (!child_mgr_->SpawnDetachedInstance(child_hwnd)) {
+        POINT spawn = { screen_pt.x - 32, screen_pt.y - 8 };
+        if (!child_mgr_->SpawnDetachedInstance(child_hwnd, &spawn)) {
             MHX_LOG_WARN(L"SpawnDetachedInstance failed; child remains top-level");
         }
     }
@@ -938,7 +948,7 @@ void MainFrame::OnPostInit() {
 
     /* 0. P1: detach 出来的实例：识别 --mhx-adopt-hwnd 0xHHHH，接管那个 child 窗口
      *
-     * 命令行格式：mhtabx.exe --mhx-adopt-hwnd 0x000000007FFE1234
+     * 命令行格式：mhtabx.exe --mhx-adopt-hwnd 0x000000007FFE1234 [--mhx-spawn-at X,Y]
      * 解析后调用 AdoptExternalWindow，child 立即变成本实例的首 Tab。
      * 此路径与 LaunchChild / SessionStore 互斥（detach 实例不该再恢复 session）。 */
     if (!pending_cmd_line_.empty()) {
@@ -953,6 +963,40 @@ void MainFrame::OnPostInit() {
             wchar_t* end = nullptr;
             unsigned long long val = ::wcstoull(
                 pending_cmd_line_.c_str() + value_pos, &end, 0);
+
+            /* 可选：--mhx-spawn-at X,Y → 把主窗口移到屏幕指定位置
+             * 必须在 adopt 之前做，因为 adopt 会 SetParent child → tab_ctrl_，
+             * child 的位置会跟随主窗口。 */
+            size_t sp_pos = pending_cmd_line_.find(kArgSpawnAt);
+            if (sp_pos != String::npos) {
+                size_t sv_pos = sp_pos + wcslen(kArgSpawnAt);
+                while (sv_pos < pending_cmd_line_.size() &&
+                       ::iswspace(pending_cmd_line_[sv_pos])) ++sv_pos;
+                wchar_t* cursor = const_cast<wchar_t*>(pending_cmd_line_.c_str() + sv_pos);
+                long sx = ::wcstol(cursor, &cursor, 10);
+                if (cursor && *cursor == L',') {
+                    long sy = ::wcstol(cursor + 1, nullptr, 10);
+                    /* 裁剪到最近监视器 work area，防止跑到屏幕外 */
+                    POINT pt = { sx, sy };
+                    HMONITOR mon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+                    MONITORINFO mi = { sizeof(mi) };
+                    if (mon && ::GetMonitorInfoW(mon, &mi)) {
+                        RECT wa = mi.rcWork;
+                        RECT wr; ::GetWindowRect(hwnd_, &wr);
+                        int w = wr.right  - wr.left;
+                        int h = wr.bottom - wr.top;
+                        if (sx + w > wa.right)  sx = wa.right  - w;
+                        if (sy + h > wa.bottom) sy = wa.bottom - h;
+                        if (sx < wa.left) sx = wa.left;
+                        if (sy < wa.top)  sy = wa.top;
+                    }
+                    ::SetWindowPos(hwnd_, nullptr,
+                                   static_cast<int>(sx), static_cast<int>(sy),
+                                   0, 0,
+                                   SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    MHX_LOG_INFO(L"OnPostInit spawn_at: (%ld, %ld)", sx, sy);
+                }
+            }
 
             HWND target = reinterpret_cast<HWND>(static_cast<uintptr_t>(val));
             if (target && ::IsWindow(target)) {

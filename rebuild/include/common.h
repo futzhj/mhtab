@@ -71,6 +71,12 @@ constexpr const wchar_t* kMainFrameClassPrefix = L"mhtabx_MainFrame_";
  */
 constexpr const wchar_t* kArgAdoptHwnd = L"--mhx-adopt-hwnd";
 
+/* 可选：为 detach 出的新实例指定屏幕坐标窗口左上角位置。
+ * 格式：--mhx-spawn-at X,Y  （例如 --mhx-spawn-at 800,450）
+ * 用于让 detach 出的新 mhtabx 窗口在用户拖拽松手的位置出现，
+ * 而不是 Win32 CW_USEDEFAULT 的系统默认位置。 */
+constexpr const wchar_t* kArgSpawnAt   = L"--mhx-spawn-at";
+
 /* ============================================================
  * 错误处理
  * ============================================================ */

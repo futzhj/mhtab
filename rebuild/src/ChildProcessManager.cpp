@@ -223,7 +223,7 @@ bool ChildProcessManager::DetachSlot(int slot_id) {
  * 注意：必须用 GetModuleFileNameW(nullptr, ...) 拿自身路径，
  * 不能假设 PATH 里有 mhtabx.exe（开发机/绿色版常见情况）。
  * ============================================================ */
-bool ChildProcessManager::SpawnDetachedInstance(HWND child_hwnd) {
+bool ChildProcessManager::SpawnDetachedInstance(HWND child_hwnd, const POINT* spawn_at) {
     if (!child_hwnd || !::IsWindow(child_hwnd)) return false;
 
     /* 1. 取自身可执行路径 */
@@ -236,13 +236,21 @@ bool ChildProcessManager::SpawnDetachedInstance(HWND child_hwnd) {
     }
 
     /* 2. 拼命令行：
-     *    "<exe>" --mhx-adopt-hwnd 0xHHHHHHHHHHHHHHHH
+     *    "<exe>" --mhx-adopt-hwnd 0xHHHHHHHHHHHHHHHH [--mhx-spawn-at X,Y]
      *    HWND 在 64-bit 上是 8 字节指针，用 %llX 输出 */
     String cmd_line = utils::Format(
         L"\"%s\" %s 0x%016llX",
         exe_path,
         kArgAdoptHwnd,
         reinterpret_cast<unsigned long long>(child_hwnd));
+
+    /* 可选位置参数：新进程读取后 SetWindowPos 到目标坐标 */
+    if (spawn_at) {
+        cmd_line += utils::Format(L" %s %d,%d",
+                                  kArgSpawnAt,
+                                  static_cast<int>(spawn_at->x),
+                                  static_cast<int>(spawn_at->y));
+    }
     MHX_LOG_INFO(L"SpawnDetachedInstance: %s", cmd_line.c_str());
 
     /* CreateProcess 要 mutable buffer */
