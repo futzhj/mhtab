@@ -137,6 +137,18 @@ static int AppMain(HINSTANCE hInstance, int nShowCmd) {
     String cmd_line = BuildCmdLineFromArgv();
     MHX_LOG_INFO(L"cmdline: %s", cmd_line.empty() ? L"(empty)" : cmd_line.c_str());
 
+    /* === 多实例模式判定 ===
+     *
+     * 命令行包含 --mhx-adopt-hwnd 表示这是 detach 出来的新进程，
+     * 它要"领养"一个已有 child 窗口作为自己的首个 Tab。这种进程
+     * 必须绕过单实例转发，否则 detach 链路会失败：
+     *   - 新进程被 mutex 拦截 → 转发命令行回老进程 → 老进程不知道
+     *     该参数应交给"自己"还是新进程 → child 永远不会被接管。
+     *
+     * 因此 detach 进程：不持 mutex、不查 existing instance、直接 Create。
+     * 关闭后也不会破坏单实例语义（mutex 仍由原主实例持有）。 */
+    bool adopt_mode = cmd_line.find(kArgAdoptHwnd) != String::npos;
+
     /* === 构造实例指纹 === */
     String fp = utils::GetWorkingDirectoryFingerprint();
     if (fp.empty()) {
@@ -148,10 +160,17 @@ static int AppMain(HINSTANCE hInstance, int nShowCmd) {
     String class_name = String(kMainFrameClassPrefix) + fp;
     u32    instance_id = (u32)wcstoul(fp.substr(0, 8).c_str(), nullptr, 16);
 
-    /* === 单实例互斥锁 === */
-    ::SetLastError(0);
-    UniqueHandle mutex(::CreateMutexW(nullptr, FALSE, mutex_name.c_str()));
-    DWORD err = ::GetLastError();
+    UniqueHandle mutex;
+    DWORD err = 0;
+
+    if (!adopt_mode) {
+        /* === 单实例互斥锁（仅普通启动路径） === */
+        ::SetLastError(0);
+        mutex.reset(::CreateMutexW(nullptr, FALSE, mutex_name.c_str()));
+        err = ::GetLastError();
+    } else {
+        MHX_LOG_INFO(L"adopt_mode: bypassing single-instance check");
+    }
 
     if (err == ERROR_ALREADY_EXISTS) {
         /* 已有实例：尝试转发 */

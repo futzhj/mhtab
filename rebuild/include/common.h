@@ -60,8 +60,16 @@ constexpr UINT kHeartbeatTimeoutMs  = 3000;    /* 心跳超时 */
 constexpr UINT kChildStartupTimeoutMs = 10000; /* 子进程注册超时 */
 
 /* 窗口类名前缀（后缀为 workdir 的 MD5 hex） */
-constexpr const wchar_t* kMainFrameClassPrefix = L"MhtabxMainFrame_";
 constexpr const wchar_t* kMutexNamePrefix      = L"Global\\mhtabx_";
+constexpr const wchar_t* kMainFrameClassPrefix = L"mhtabx_MainFrame_";
+
+/* === 命令行参数 === */
+/* 仅出现在 detach 后启动的新 mhtabx 进程命令行中。
+ * 主程序识别后绕过单实例转发，启动新窗口并 AdoptExternalWindow 接管 child。
+ *
+ * 用法：mhtabx.exe --mhx-adopt-hwnd 0xHHHHHHHH
+ */
+constexpr const wchar_t* kArgAdoptHwnd = L"--mhx-adopt-hwnd";
 
 /* ============================================================
  * 错误处理

@@ -214,6 +214,69 @@ bool ChildProcessManager::DetachSlot(int slot_id) {
 }
 
 /* ============================================================
+ * P1: SpawnDetachedInstance
+ *
+ * 启动一个 mhtabx.exe 新进程，命令行带 --mhx-adopt-hwnd 0xHWND。
+ * 新进程在 main.cpp 中识别该参数，绕过单实例 mutex，启动后通过
+ * MainFrame::OnPostInit 调用 AdoptExternalWindow 接管 child_hwnd。
+ *
+ * 注意：必须用 GetModuleFileNameW(nullptr, ...) 拿自身路径，
+ * 不能假设 PATH 里有 mhtabx.exe（开发机/绿色版常见情况）。
+ * ============================================================ */
+bool ChildProcessManager::SpawnDetachedInstance(HWND child_hwnd) {
+    if (!child_hwnd || !::IsWindow(child_hwnd)) return false;
+
+    /* 1. 取自身可执行路径 */
+    wchar_t exe_path[MAX_PATH] = {};
+    DWORD got = ::GetModuleFileNameW(nullptr, exe_path, _countof(exe_path));
+    if (got == 0 || got >= _countof(exe_path)) {
+        MHX_LOG_ERROR(L"GetModuleFileNameW failed: %s",
+                      utils::FormatSystemError(::GetLastError()).c_str());
+        return false;
+    }
+
+    /* 2. 拼命令行：
+     *    "<exe>" --mhx-adopt-hwnd 0xHHHHHHHHHHHHHHHH
+     *    HWND 在 64-bit 上是 8 字节指针，用 %llX 输出 */
+    String cmd_line = utils::Format(
+        L"\"%s\" %s 0x%016llX",
+        exe_path,
+        kArgAdoptHwnd,
+        reinterpret_cast<unsigned long long>(child_hwnd));
+    MHX_LOG_INFO(L"SpawnDetachedInstance: %s", cmd_line.c_str());
+
+    /* CreateProcess 要 mutable buffer */
+    std::vector<wchar_t> cmd_buf(cmd_line.begin(), cmd_line.end());
+    cmd_buf.push_back(L'\0');
+
+    STARTUPINFOW        si = {};
+    PROCESS_INFORMATION pi = {};
+    si.cb = sizeof(si);
+
+    BOOL ok = ::CreateProcessW(
+        exe_path,
+        cmd_buf.data(),
+        nullptr, nullptr, FALSE,
+        0,           /* 默认 flags（不需要新 console） */
+        nullptr, nullptr,
+        &si, &pi);
+
+    if (!ok) {
+        MHX_LOG_ERROR(L"SpawnDetachedInstance CreateProcessW failed: %s",
+                      utils::FormatSystemError(::GetLastError()).c_str());
+        return false;
+    }
+
+    /* 我们不跟踪新进程；它启动后会自我管理。立即关闭句柄。 */
+    ::CloseHandle(pi.hThread);
+    ::CloseHandle(pi.hProcess);
+
+    MHX_LOG_INFO(L"SpawnDetachedInstance OK: pid=%lu adopted_hwnd=%p",
+                 pi.dwProcessId, child_hwnd);
+    return true;
+}
+
+/* ============================================================
  * W6-bugfix: AdoptExternalWindow
  *
  * 重新"领养"一个已脱离的 child 窗口，让它再次被 Tab 容纳。

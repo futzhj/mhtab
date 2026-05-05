@@ -690,16 +690,35 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
         }
 
         case ID_TAB_DETACH: {
-            /* W5-4: 把当前 Tab 分离为独立顶层窗口 */
+            /* P1: 把当前 Tab 分离到一个新 mhtabx 实例
+             *
+             * 流程：
+             *   1. tab_ctrl_->DetachSlot 让 child 变成顶层 WS_OVERLAPPEDWINDOW
+             *   2. child_mgr_->DetachSlot 释放 wait handle（不再 wait pid）
+             *   3. heartbeat_ 注销 slot
+             *   4. SpawnDetachedInstance 启动新 mhtabx 进程接管 child
+             *
+             * 注意 1 和 2 的顺序：先 UI 改顶层，再放手 wait handle，
+             * 这样新进程 OpenProcess 时不会与本进程的 hProcess 冲突。 */
             if (!tab_ctrl_ || !child_mgr_) return 0;
             int sid = tab_ctrl_->GetSelectedSlotId();
             if (sid < 0) return 0;
 
-            /* 清理顺序：先解除 wait handle 跟踪，再移除 heartbeat slot，
-             * 最后 TabController::DetachSlot 清理 UI（会把 slot 置空）。 */
+            auto* slot = tab_ctrl_->FindSlot(sid);
+            if (!slot) return 0;
+            HWND child_hwnd = slot->child_hwnd;
+
             child_mgr_->DetachSlot(sid);
             if (heartbeat_) heartbeat_->UnregisterSlot(sid);
             tab_ctrl_->DetachSlot(sid);
+
+            if (child_hwnd && ::IsWindow(child_hwnd)) {
+                if (!child_mgr_->SpawnDetachedInstance(child_hwnd)) {
+                    /* 启动新进程失败：child 已经独立顶层显示，至少不会卡死。
+                     * 用户可以手动 F6 合并回任意 mhtabx 实例。 */
+                    MHX_LOG_WARN(L"SpawnDetachedInstance failed; child remains top-level");
+                }
+            }
 
             ::InvalidateRect(hwnd_, nullptr, TRUE);
             return 0;
@@ -801,6 +820,44 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
  * ============================================================ */
 void MainFrame::OnPostInit() {
     if (!child_mgr_) return;
+
+    /* 0. P1: detach 出来的实例：识别 --mhx-adopt-hwnd 0xHHHH，接管那个 child 窗口
+     *
+     * 命令行格式：mhtabx.exe --mhx-adopt-hwnd 0x000000007FFE1234
+     * 解析后调用 AdoptExternalWindow，child 立即变成本实例的首 Tab。
+     * 此路径与 LaunchChild / SessionStore 互斥（detach 实例不该再恢复 session）。 */
+    if (!pending_cmd_line_.empty()) {
+        size_t pos = pending_cmd_line_.find(kArgAdoptHwnd);
+        if (pos != String::npos) {
+            /* 跳过参数名，找紧跟的 0x... */
+            size_t value_pos = pos + wcslen(kArgAdoptHwnd);
+            while (value_pos < pending_cmd_line_.size() &&
+                   ::iswspace(pending_cmd_line_[value_pos])) ++value_pos;
+
+            /* wcstoull 接受 0x 前缀（base=0） */
+            wchar_t* end = nullptr;
+            unsigned long long val = ::wcstoull(
+                pending_cmd_line_.c_str() + value_pos, &end, 0);
+
+            HWND target = reinterpret_cast<HWND>(static_cast<uintptr_t>(val));
+            if (target && ::IsWindow(target)) {
+                wchar_t title_buf[128] = {};
+                ::GetWindowTextW(target, title_buf, _countof(title_buf));
+                int new_slot = child_mgr_->AdoptExternalWindow(target, title_buf);
+                if (new_slot >= 0) {
+                    if (heartbeat_) heartbeat_->RegisterSlot(new_slot);
+                    ipc::PostActivateView(target, new_slot);
+                    MHX_LOG_INFO(L"OnPostInit adopt OK: hwnd=%p slot=%d", target, new_slot);
+                } else {
+                    MHX_LOG_ERROR(L"OnPostInit adopt failed for hwnd=%p", target);
+                }
+            } else {
+                MHX_LOG_ERROR(L"OnPostInit: --mhx-adopt-hwnd invalid 0x%llX", val);
+            }
+            pending_cmd_line_.clear();
+            return;     /* 不再走 LaunchChild / session 恢复 */
+        }
+    }
 
     /* 1. 命令行优先 */
     if (!pending_cmd_line_.empty()) {

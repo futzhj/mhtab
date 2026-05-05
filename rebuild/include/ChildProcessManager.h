@@ -78,6 +78,21 @@ public:
     bool DetachSlot(int slot_id);
 
     /**
+     * P1: 启动一个新 mhtabx 进程并让它接管 child_hwnd 作为首 Tab。
+     *
+     * 用于 detach 流程：本进程不再管理这个 child，新进程会通过
+     * --mhx-adopt-hwnd 命令行参数 AdoptExternalWindow(hwnd)。
+     *
+     * 调用此函数前应当：
+     *   1. 已 SetParent(child_hwnd, NULL) 让窗口变成顶层（有标题栏）
+     *   2. 已 DetachSlot 释放 wait handle（不再 wait 该 pid）
+     * 之后 child 在新 mhtabx 接管前是一个独立的顶层窗口；接管后变 child。
+     *
+     * @return true 成功启动新进程；false CreateProcess 失败
+     */
+    bool SpawnDetachedInstance(HWND child_hwnd);
+
+    /**
      * W6-bugfix: 领养一个已存在的外部子进程窗口（通常是之前 DetachSlot 的回流）。
      *
      * 步骤：
