@@ -122,7 +122,9 @@ enum MhxMsg : UINT {
     MHX_CLEANUP_VIEW    = WM_APP + 25,
     MHX_SHOW_WINDOW     = WM_APP + 26,
     MHX_SET_TAB_ICON    = WM_APP + 27,    /* W6-2: 子→主，wp=slot_id, lp=HICON */
-    MHX_REMBED_REQUEST  = WM_APP + 28,    /* W6-bugfix: 子→主，wp=child_hwnd, lp=0, 返回新 slot_id 或 -1 */
+    MHX_REMBED_REQUEST  = WM_APP + 28,    /* W6-bugfix: 子→主。wp=child_hwnd, lp=0, 返回 slot_id 或 -1 */
+    MHX_RELEASE_CHILD   = WM_APP + 29,    /* 主→主广播：wp=child_hwnd, lp=0。若本实例持有该 child 则移除并触发 CheckAutoExit。
+                                           * 用于修复多实例下合并回主窗口后，前 owner 不知情导致 slot 遗留的 bug。 */
     MHX_ACTIVATE        = WM_APP + 100,
     MHX_BRING_TO_FRONT  = WM_APP + 101,
     MHX_FIND_BY_HWND    = WM_APP + 102,

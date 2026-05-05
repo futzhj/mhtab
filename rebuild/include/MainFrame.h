@@ -77,6 +77,14 @@ private:
     LRESULT OnSetTabIcon(WPARAM slot_id, LPARAM icon);   /* W6-2 */
     LRESULT OnRembedRequest(WPARAM child_hwnd, LPARAM lp); /* W6-bugfix: 合并回主窗口 */
 
+    /* 多实例 bugfix: 其他 mhtabx 实例广播的 release 通知。
+     * 若本实例 slots 里持有该 child，DetachSlot 丢弃（不销毁 child，它已搬家）。 */
+    LRESULT OnReleaseChild(WPARAM child_hwnd, LPARAM lp);
+
+    /* 广播 MHX_RELEASE_CHILD 给本机其它所有 mhtabx 主窗口，通知它们
+     * "这个 child_hwnd 已经在我这儿，你们若持有请清理"。 */
+    void BroadcastReleaseChild(HWND child_hwnd);
+
     /* P2 + P4: TabController 拖拽到主窗口外的回调实现
      * 决定是 spawn 新实例还是跨实例合并到落点 mhtabx 主窗口 */
     void OnTabDragOut(int slot_id, POINT screen_pt);

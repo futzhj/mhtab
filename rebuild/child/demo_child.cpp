@@ -235,22 +235,38 @@ LRESULT CALLBACK ChildWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
                 return 0;
             }
-            /* W6-bugfix: F6 请求合并回主窗口（detach 的反向操作） */
+            /* W6-bugfix + 多实例修复: F6 请求合并回最初主窗口
+             *
+             * 语义: 无论我当前被哪个 mhtabx 接管，按 F6 都"回家"到启动时命令行
+             * 指定的原始 host_hwnd。原 host 的 OnRembedRequest 会 BroadcastReleaseChild
+             * 通知当前 owner 放手，所以 demo_child 这边不需要知道当前 owner 是谁。
+             *
+             * 关键保护: 若 GetAncestor(hwnd, GA_ROOT) 已经 == 原 host，说明 child
+             * 已经在"家"，再发 REMBED_REQUEST 会在原 host 里重复 Adopt 同一个 hwnd
+             * (旧代码无限合并创建窗口的根因)，直接跳过。 */
             if (wp == VK_F6) {
-                if (st && st->host_hwnd && ::IsWindow(st->host_hwnd)) {
-                    DWORD_PTR result = 0;
-                    LRESULT r = ::SendMessageTimeoutW(
-                        st->host_hwnd, MHX_REMBED_REQUEST,
-                        reinterpret_cast<WPARAM>(hwnd), 0,
-                        SMTO_ABORTIFHUNG, 3000, &result);
-                    if (r && static_cast<intptr_t>(result) >= 0) {
-                        /* host 返回新 slot_id，更新本地状态 */
-                        st->slot_id = static_cast<int>(static_cast<intptr_t>(result));
-                        DbgLog(L"[demo_child] reembed OK: new slot=%d\n", st->slot_id);
-                    } else {
-                        DbgLog(L"[demo_child] reembed failed: result=%lld\n",
-                               (long long)result);
-                    }
+                HWND target = st ? st->host_hwnd : nullptr;
+                if (!target || !::IsWindow(target)) return 0;
+
+                HWND current_host = ::GetAncestor(hwnd, GA_ROOT);
+                if (current_host == target) {
+                    DbgLog(L"[demo_child] F6 ignored: already under original host %p\n",
+                           target);
+                    return 0;
+                }
+
+                DWORD_PTR result = 0;
+                LRESULT r = ::SendMessageTimeoutW(
+                    target, MHX_REMBED_REQUEST,
+                    reinterpret_cast<WPARAM>(hwnd), 0,
+                    SMTO_ABORTIFHUNG, 3000, &result);
+                if (r && static_cast<intptr_t>(result) >= 0) {
+                    /* target 返回新 slot_id，更新本地状态 */
+                    st->slot_id = static_cast<int>(static_cast<intptr_t>(result));
+                    DbgLog(L"[demo_child] reembed OK: new slot=%d\n", st->slot_id);
+                } else {
+                    DbgLog(L"[demo_child] reembed failed: result=%lld\n",
+                           (long long)result);
                 }
                 return 0;
             }

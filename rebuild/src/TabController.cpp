@@ -1031,17 +1031,32 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 drop_indicator_idx_ = -1;
                 ::InvalidateRect(tab_ctrl_, nullptr, FALSE);
 
-                /* P2: 屏幕级判定 - 鼠标松开点是否在主窗口 GetWindowRect 内
-                 *   - 在内 → 现有重排逻辑
-                 *   - 在外 → 触发 on_drag_out_ 让 MainFrame 决定 spawn / cross-merge */
+                /* 多实例 bugfix: 判定改为 "鼠标是否在本 tab bar 的扩展带内"。
+                 *
+                 * 旧实现用 GetWindowRect(parent_) 整个主窗口外框 → 用户往菜单栏、
+                 * 状态栏、内容区任意位置松手都算 inside，drag-out 几乎永远触发不了。
+                 * Chrome 行为：只要离开 tab bar 一定垂直距离就视为"撕下来"。
+                 *
+                 * 扩展规则：
+                 *   - 水平方向：tab bar 左右再各扩 32px 保留一点冗余（用户手抖）
+                 *   - 垂直方向：仅允许从 tab bar 上沿再往上 32px 到下沿再往下 32px
+                 *     之外视为 drag-out；这个范围足够用户"略微偏下对到某个 tab"
+                 *     而不会误触 detach */
                 POINT screen_pt;
                 ::GetCursorPos(&screen_pt);
                 ::ReleaseCapture();
 
-                RECT main_rc = {};
+                RECT bar_rc = {};
                 bool inside = false;
-                if (parent_ && ::GetWindowRect(parent_, &main_rc)) {
-                    inside = ::PtInRect(&main_rc, screen_pt) != 0;
+                if (tab_ctrl_ && ::GetWindowRect(tab_ctrl_, &bar_rc)) {
+                    constexpr int kTol = 32;
+                    RECT ext = {
+                        bar_rc.left   - kTol,
+                        bar_rc.top    - kTol,
+                        bar_rc.right  + kTol,
+                        bar_rc.bottom + kTol,
+                    };
+                    inside = ::PtInRect(&ext, screen_pt) != 0;
                 }
 
                 if (inside) {

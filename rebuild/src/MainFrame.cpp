@@ -190,6 +190,7 @@ LRESULT MainFrame::WndProc(UINT msg, WPARAM wp, LPARAM lp) {
         case MHX_CLEANUP_VIEW:  return OnCleanupView(wp, lp);
         case MHX_SET_TAB_ICON:  return OnSetTabIcon(wp, lp);   /* W6-2 */
         case MHX_REMBED_REQUEST: return OnRembedRequest(wp, lp); /* W6-bugfix */
+        case MHX_RELEASE_CHILD:  return OnReleaseChild(wp, lp);  /* 多实例 bugfix */
         case MHX_HEARTBEAT:     return TRUE;   /* 子进程发的兼容情况 */
 
         case kMsgPostInit:
@@ -613,10 +614,86 @@ LRESULT MainFrame::OnRembedRequest(WPARAM child_hwnd_w, LPARAM /*lp*/) {
     /* 立即发 ACTIVATE_VIEW 让 child 进入 active 态 */
     ipc::PostActivateView(child_hwnd, new_slot_id);
 
+    /* 关键修复：通知其它 mhtabx 实例"这个 child 已经搬到我这儿"。
+     * 否则上一个 owner 的 slot 会遗留幽灵条目，导致它不 auto-exit，
+     * 且用户反复 F6 会在原 owner 重复 Adopt 产生无限合并。 */
+    BroadcastReleaseChild(child_hwnd);
+
     ::InvalidateRect(hwnd_, nullptr, TRUE);
     MHX_LOG_INFO(L"OnRembedRequest: hwnd=%p -> new slot_id=%d",
                  child_hwnd, new_slot_id);
     return static_cast<LRESULT>(new_slot_id);
+}
+
+/* ============================================================
+ * 多实例 bugfix: OnReleaseChild
+ *
+ * 由其它 mhtabx 实例广播 MHX_RELEASE_CHILD 触发，wp = child_hwnd。
+ * 语义："这个 child 已经不归你管了，请清理 slot 但不要销毁进程/窗口"。
+ *
+ * 流程：
+ *   1. 在所有 slots 里找 child_hwnd 匹配项（可能一个都没有，正常）
+ *   2. 找到 → 放弃 wait handle、注销心跳、从 tab 控件移除
+ *      注意调用的是 *不杀进程* 的 DetachSlot，不能走 RemoveSlot（会 WM_CLOSE child）
+ *   3. CheckAutoExit：本实例可能因此空了 → 自动退出
+ * ============================================================ */
+LRESULT MainFrame::OnReleaseChild(WPARAM child_hwnd_w, LPARAM /*lp*/) {
+    HWND child_hwnd = reinterpret_cast<HWND>(child_hwnd_w);
+    if (!tab_ctrl_ || !child_mgr_ || !child_hwnd) return 0;
+
+    /* 线性扫描 slots 找匹配 hwnd（O(N)，N 通常 < 20，可忽略） */
+    int victim = -1;
+    tab_ctrl_->ForEachSlot([&victim, child_hwnd](const ChildSlot& s) {
+        if (victim < 0 && s.child_hwnd == child_hwnd) victim = s.slot_id;
+    });
+    if (victim < 0) return 0;    /* 本实例不持有，属于正常情况 */
+
+    MHX_LOG_INFO(L"OnReleaseChild: slot=%d child=%p released", victim, child_hwnd);
+    child_mgr_->DetachSlot(victim);
+    if (heartbeat_) heartbeat_->UnregisterSlot(victim);
+    tab_ctrl_->DetachSlot(victim);
+
+    ::InvalidateRect(hwnd_, nullptr, TRUE);
+    CheckAutoExit();
+    return 1;
+}
+
+/* ============================================================
+ * 多实例 bugfix: BroadcastReleaseChild
+ *
+ * EnumWindows 扫描所有顶层窗口，找 class 以 kMainFrameClassPrefix 开头的
+ * mhtabx 主窗口，排除自己后用 SendMessageTimeoutW 通知它们释放 child。
+ *
+ * 用同步 SendMessageTimeoutW 而不是 PostMessage，确保在本次 OnRembedRequest
+ * 返回前对方已清理完，避免 tab 控件短暂显示两份相同 child 的窗口闪烁。
+ * 每个目标独立超时 500ms，防止对方卡死拖垮本进程。
+ * ============================================================ */
+void MainFrame::BroadcastReleaseChild(HWND child_hwnd) {
+    if (!child_hwnd) return;
+
+    struct Ctx {
+        HWND self;
+        HWND child;
+    } ctx { hwnd_, child_hwnd };
+
+    ::EnumWindows([](HWND top, LPARAM lp) -> BOOL {
+        auto* c = reinterpret_cast<Ctx*>(lp);
+        if (top == c->self) return TRUE;    /* 跳过自己 */
+
+        wchar_t class_buf[128] = {};
+        ::GetClassNameW(top, class_buf, _countof(class_buf));
+        if (wcsncmp(class_buf, kMainFrameClassPrefix,
+                    wcslen(kMainFrameClassPrefix)) != 0) {
+            return TRUE;
+        }
+
+        DWORD_PTR unused = 0;
+        ::SendMessageTimeoutW(
+            top, MHX_RELEASE_CHILD,
+            reinterpret_cast<WPARAM>(c->child), 0,
+            SMTO_ABORTIFHUNG, 500, &unused);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
 }
 
 /* ============================================================
