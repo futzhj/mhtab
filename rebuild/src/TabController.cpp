@@ -236,9 +236,24 @@ bool TabController::DetachSlot(int slot_id) {
         return false;
     }
 
-    /* 1. 恢复独立顶层窗口 */
+    /* 1. 恢复独立顶层窗口
+     *
+     * BUG 历史：曾经直接 SetWindowLongPtr(child, GWL_STYLE, orig_style)
+     *  子进程以 embedded=true 启动时 orig_style 通常是 WS_POPUP，
+     *  原样恢复会让分离后的顶层窗口没有标题栏和最小/最大/关闭按钮。
+     *
+     * 修复：分离时强制赋予 WS_OVERLAPPEDWINDOW（标题栏+边框+系统菜单+
+     *  最大化+最小化+调整大小），保留 orig_style 里的自定义 bit，但
+     *  清掉 WS_CHILD / WS_POPUP 这两个与"顶层窗口"语义冲突的样式。
+     *
+     *  EX_STYLE 也要剥离 WS_EX_NOACTIVATE 之类会让窗口无法激活的标志，
+     *  但大多数子进程不会设置这些，默认保留即可。 */
     ::SetParent(child, orig_parent);
-    ::SetWindowLongPtrW(child, GWL_STYLE, orig_style);
+
+    LONG_PTR detach_style = (orig_style & ~(WS_CHILD | WS_POPUP))
+                          | WS_OVERLAPPEDWINDOW
+                          | WS_VISIBLE;
+    ::SetWindowLongPtrW(child, GWL_STYLE, detach_style);
 
     /* 2. 从 Tab 移除（同 RemoveSlot 逻辑） */
     if (tab_index >= 0 && tab_ctrl_) {
