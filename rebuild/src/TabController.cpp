@@ -26,6 +26,8 @@ TabController::~TabController() {
     if (tab_ctrl_) {
         ::RemoveWindowSubclass(tab_ctrl_, &TabController::TabSubclassProc, kTabSubclassId);
     }
+    /* P3: safety net - 万一拖拽中程序退出，也别留下幽灵预览窗口 */
+    DestroyDragPreview();
     /* 析构时还原所有 child 窗口的 parent，避免 child 进程被牵连销毁 */
     for (auto& slot_ptr : slots_) {
         if (slot_ptr && slot_ptr->child_hwnd && slot_ptr->orig_parent) {
@@ -491,6 +493,162 @@ int TabController::TabIdxToSlotId(int tab_idx) const noexcept {
 }
 
 /* ============================================================
+ * P3: 拖拽迷你预览窗口
+ *
+ * 实现要点：
+ *   - 自定义 WindowClass "mhx_DragPreview"，避免与系统 class 冲突
+ *   - WS_POPUP + 无边框；EX 标志加 LAYERED + TOOLWINDOW + TOPMOST + NOACTIVATE
+ *     - LAYERED   做半透明
+ *     - TOOLWINDOW 不在任务栏出现
+ *     - NOACTIVATE 鼠标移到 preview 上不夺焦点
+ *   - SetLayeredWindowAttributes(LWA_ALPHA, 0xC0) 75% 不透明
+ *   - WM_PAINT 中读 preview_tab_idx_ 对应的 slot.title 绘制
+ *
+ * 实例方法 vs 静态：WindowClass 注册和 thunk 是 static，但
+ * WM_PAINT 需要拿 TabController 实例，通过 GWLP_USERDATA 传递 this。
+ * ============================================================ */
+
+namespace {
+constexpr const wchar_t* kDragPreviewClass = L"mhx_DragPreview";
+constexpr int kPreviewW = 200;
+constexpr int kPreviewH = 28;
+constexpr BYTE kPreviewAlpha = 0xC0;       /* ~75% */
+} /* namespace */
+
+void TabController::EnsurePreviewClassRegistered(HINSTANCE hInst) {
+    /* 通过 GetClassInfoExW 检测是否已注册（idempotent） */
+    WNDCLASSEXW probe = {};
+    probe.cbSize = sizeof(probe);
+    if (::GetClassInfoExW(hInst, kDragPreviewClass, &probe)) return;
+
+    WNDCLASSEXW wc = {};
+    wc.cbSize        = sizeof(wc);
+    wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = TabController::PreviewWndProc;
+    wc.hInstance     = hInst;
+    wc.hCursor       = ::LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr;          /* 自己 paint，不让系统填 */
+    wc.lpszClassName = kDragPreviewClass;
+    ::RegisterClassExW(&wc);
+}
+
+LRESULT CALLBACK TabController::PreviewWndProc(
+    HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+
+    /* 实例指针通过 WM_NCCREATE 时的 CREATESTRUCT.lpCreateParams 传入 */
+    if (msg == WM_NCCREATE) {
+        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                            reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    }
+
+    auto* self = reinterpret_cast<TabController*>(
+        ::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (self) return self->HandlePreviewMessage(hwnd, msg, wp, lp);
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+LRESULT TabController::HandlePreviewMessage(
+    HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+
+    switch (msg) {
+        case WM_PAINT: {
+            PAINTSTRUCT ps = {};
+            HDC hdc = ::BeginPaint(hwnd, &ps);
+
+            RECT rc = {};
+            ::GetClientRect(hwnd, &rc);
+
+            /* 背景：用主题的"selected"色（与正常 tab 选中态色一致） */
+            COLORREF bg = RGB(0x00, 0x78, 0xD4);     /* fallback */
+            COLORREF fg = RGB(0xFF, 0xFF, 0xFF);
+            if (theme_) {
+                /* ITheme 没暴露 sel_bg 直接接口，用 client_bg 反色或固定值都可。
+                 * 这里直接用 hard-coded 色（主题切换不会影响预览，可接受） */
+            }
+
+            HBRUSH br = ::CreateSolidBrush(bg);
+            ::FillRect(hdc, &rc, br);
+            ::DeleteObject(br);
+
+            /* 1px 白色边框 */
+            ::FrameRect(hdc, &rc, (HBRUSH)::GetStockObject(WHITE_BRUSH));
+
+            /* 标题：从 preview_tab_idx_ 反查 slot title */
+            String title = L"Tab";
+            int sid = TabIdxToSlotId(preview_tab_idx_);
+            if (sid >= 0) {
+                if (auto* s = FindSlot(sid)) {
+                    if (!s->title.empty()) title = s->title;
+                }
+            }
+
+            ::SetBkMode(hdc, TRANSPARENT);
+            ::SetTextColor(hdc, fg);
+            RECT text_rc = rc;
+            text_rc.left += 8;
+            text_rc.right -= 8;
+            ::DrawTextW(hdc, title.c_str(), -1, &text_rc,
+                        DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+            ::EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        case WM_NCHITTEST:
+            /* 让鼠标透过预览窗口去命中下面的窗口 */
+            return HTTRANSPARENT;
+    }
+    return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void TabController::CreateDragPreview(int tab_idx) {
+    if (preview_hwnd_) return;        /* 已存在 */
+    if (!hInstance_) return;
+
+    EnsurePreviewClassRegistered(hInstance_);
+    preview_tab_idx_ = tab_idx;
+
+    DWORD style    = WS_POPUP;
+    DWORD ex_style = WS_EX_LAYERED | WS_EX_TOOLWINDOW
+                   | WS_EX_TOPMOST | WS_EX_NOACTIVATE
+                   | WS_EX_TRANSPARENT;
+
+    preview_hwnd_ = ::CreateWindowExW(
+        ex_style, kDragPreviewClass, L"",
+        style,
+        0, 0, kPreviewW, kPreviewH,
+        nullptr, nullptr, hInstance_, this);
+    if (!preview_hwnd_) {
+        MHX_LOG_WARN(L"CreateDragPreview: CreateWindowExW failed: %lu",
+                     ::GetLastError());
+        return;
+    }
+
+    ::SetLayeredWindowAttributes(preview_hwnd_, 0, kPreviewAlpha, LWA_ALPHA);
+
+    POINT cur;
+    ::GetCursorPos(&cur);
+    MoveDragPreview(cur);
+    ::ShowWindow(preview_hwnd_, SW_SHOWNOACTIVATE);
+}
+
+void TabController::MoveDragPreview(POINT screen_pt) {
+    if (!preview_hwnd_) return;
+    /* 预览窗口偏移到鼠标右下，避免遮住光标 */
+    ::SetWindowPos(preview_hwnd_, HWND_TOPMOST,
+                   screen_pt.x + 12, screen_pt.y + 12, 0, 0,
+                   SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void TabController::DestroyDragPreview() {
+    if (!preview_hwnd_) return;
+    ::DestroyWindow(preview_hwnd_);
+    preview_hwnd_ = nullptr;
+    preview_tab_idx_ = -1;
+}
+
+/* ============================================================
  * W4: Tab subclass thunk
  * ============================================================ */
 LRESULT CALLBACK TabController::TabSubclassProc(
@@ -559,9 +717,15 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
                                       dy > ::GetSystemMetrics(SM_CYDRAG))) {
                     drag_active_ = true;
                     ::SetCapture(tab_ctrl_);
+                    /* P3: 进入 active drag 时创建预览窗口 */
+                    CreateDragPreview(drag_src_idx_);
                 }
                 if (drag_active_) {
                     ::SetCursor(::LoadCursor(nullptr, IDC_SIZEWE));
+                    /* P3: 跟随鼠标更新预览位置（屏幕坐标） */
+                    POINT screen_pt;
+                    ::GetCursorPos(&screen_pt);
+                    MoveDragPreview(screen_pt);
                 }
             }
             return 0;
@@ -569,6 +733,9 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_LBUTTONUP: {
             if (drag_active_) {
+                /* P3: 先销毁预览窗口，无论后面走重排还是 detach 都不再显示 */
+                DestroyDragPreview();
+
                 /* P2: 屏幕级判定 - 鼠标松开点是否在主窗口 GetWindowRect 内
                  *   - 在内 → 现有重排逻辑
                  *   - 在外 → 触发 on_drag_out_ 让 MainFrame 决定 spawn / cross-merge */
@@ -613,6 +780,8 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
         }
 
         case WM_CAPTURECHANGED:
+            /* P3: 异常打断（如 Alt+Tab 切走焦点）也要清掉预览 */
+            DestroyDragPreview();
             drag_armed_   = false;
             drag_active_  = false;
             drag_src_idx_ = -1;

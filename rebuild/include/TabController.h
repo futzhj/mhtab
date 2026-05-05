@@ -216,6 +216,25 @@ private:
 
     /** 反查 tab_index 对应的 slot_id（不存在返回 -1） */
     int TabIdxToSlotId(int tab_idx) const noexcept;
+
+    /* === P3: 拖拽迷你预览窗口 ===
+     * 半透明 layered window，drag_active_ 时跟随鼠标移动，
+     * 内部绘制被拖拽 tab 的标题 + 主题选中色背景。 */
+    HWND        preview_hwnd_ = nullptr;
+    int         preview_tab_idx_ = -1;     /* 当前预览的 tab index（用于 WM_PAINT 取标题） */
+
+    /** 创建预览窗口。tab_idx 决定显示什么内容 */
+    void CreateDragPreview(int tab_idx);
+    /** 把预览窗口移到 screen_pt 附近（鼠标右下方一点） */
+    void MoveDragPreview(POINT screen_pt);
+    /** 销毁预览窗口 */
+    void DestroyDragPreview();
+
+    /** 预览窗口 WndProc thunk + 实例方法 */
+    static LRESULT CALLBACK PreviewWndProc(HWND, UINT, WPARAM, LPARAM);
+    LRESULT HandlePreviewMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    /** 注册预览窗口的 WindowClass（首次创建时调用，幂等） */
+    static void EnsurePreviewClassRegistered(HINSTANCE hInst);
 };
 
 } /* namespace mhx */
