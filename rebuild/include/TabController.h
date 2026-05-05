@@ -135,6 +135,16 @@ public:
      */
     bool DetachSlot(int slot_id);
 
+    /**
+     * 多实例 bugfix: "忘记"一个 slot —— 仅做数据结构清理（slots_/tab item），
+     * 完全不触碰 child 窗口的 parent / style / 位置 / Z-order。
+     *
+     * 用于跨进程场景：另一个 mhtabx 已经把这个 child 接管走了
+     * （parent 已被 SetParent 改到对方的 tab_ctrl_），如果走 DetachSlot 会
+     * 把 child SetParent(NULL) + WS_OVERLAPPEDWINDOW，撤销新 owner 的设置。
+     */
+    bool ForgetSlot(int slot_id);
+
     /** 处理 WM_DRAWITEM（由 MainFrame 路由）。成功返回 TRUE。 */
     LRESULT OnDrawItem(DRAWITEMSTRUCT* dis);
 

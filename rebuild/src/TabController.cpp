@@ -293,6 +293,55 @@ bool TabController::DetachSlot(int slot_id) {
     return true;
 }
 
+/* ============================================================
+ * 多实例 bugfix: ForgetSlot
+ *
+ * 跨进程场景下，另一个 mhtabx 已经 SetParent(child, 对方tab_ctrl_) 接管走
+ * 了这个窗口。本实例若调 DetachSlot 会进一步 SetParent(child, NULL) + 改
+ * style + SetForegroundWindow，撤销对方的设置导致 child 又变成 top-level。
+ *
+ * ForgetSlot 仅做"数据结构清理"：
+ *   - 删除 tab 项并修正 tab_index
+ *   - 清 slots_[id] 释放
+ *   - 切换 selected_slot_id_
+ * 完全不触碰 child_hwnd 本身。
+ * ============================================================ */
+bool TabController::ForgetSlot(int slot_id) {
+    auto* slot = FindSlot(slot_id);
+    if (!slot) return false;
+
+    int tab_index = slot->tab_index;
+    HWND child    = slot->child_hwnd;     /* 仅用于日志 */
+
+    /* 1. 删 tab 项 */
+    if (tab_index >= 0 && tab_ctrl_) {
+        TabCtrl_DeleteItem(tab_ctrl_, tab_index);
+        for (auto& p : slots_) {
+            if (p && p.get() != slot && p->tab_index > tab_index) --p->tab_index;
+        }
+    }
+
+    /* 2. 清空 slot 中对 child 的引用，避免析构链路再去 SetParent
+     *    （ChildSlot 析构没特殊处理，但断引用更安全） */
+    slot->child_hwnd  = nullptr;
+    slot->orig_parent = nullptr;
+    slots_[slot_id]->slot_id = -1;
+    slots_[slot_id]->state   = ChildState::Dead;
+    slots_[slot_id].reset();
+
+    /* 3. 切换 selected slot */
+    if (selected_slot_id_ == slot_id) {
+        selected_slot_id_ = -1;
+        for (auto& p : slots_) {
+            if (p && p->slot_id >= 0) { SelectSlot(p->slot_id); break; }
+        }
+    }
+
+    MHX_LOG_INFO(L"ForgetSlot id=%d child=%p (data only, not touching window)",
+                 slot_id, child);
+    return true;
+}
+
 void TabController::SelectSlot(int slot_id) {
     /* 隐藏其他所有子窗口 */
     for (auto& p : slots_) {
@@ -1000,7 +1049,10 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
                 if (!drag_active_ && (dx > ::GetSystemMetrics(SM_CXDRAG) ||
                                       dy > ::GetSystemMetrics(SM_CYDRAG))) {
                     drag_active_ = true;
-                    ::SetCapture(tab_ctrl_);
+                    /* 双保险：仅当 capture 还不在自己手上时才 SetCapture，
+                     * 避免触发 WM_CAPTURECHANGED 给自己（即便 X1 已能正确忽略，
+                     * 减少一次无谓的消息更稳妥）。 */
+                    if (::GetCapture() != tab_ctrl_) ::SetCapture(tab_ctrl_);
                     /* P3: 进入 active drag 时创建预览窗口 */
                     CreateDragPreview(drag_src_idx_);
                 }
@@ -1103,8 +1155,17 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        case WM_CAPTURECHANGED:
-            /* P3: 异常打断（如 Alt+Tab 切走焦点）也要清掉预览 */
+        case WM_CAPTURECHANGED: {
+            /* lParam 是即将获得 capture 的新窗口；如果是 tab_ctrl_ 自己（说明是
+             * 我们或 TabCtrl 默认处理在内部又调了一次 SetCapture），不算"打断"，
+             * 否则我们刚开始拖拽就被自己发的 WM_CAPTURECHANGED 关掉 drag_active_，
+             * 导致拖拽永远不能真正激活——这是"拖拽分离不工作"的根因。
+             *
+             * 仅当新 owner 是其它窗口（如 Alt+Tab 切走、对话框抢 capture）才视为
+             * 真正打断，重置拖拽状态。 */
+            HWND new_owner = reinterpret_cast<HWND>(lp);
+            if (new_owner == tab_ctrl_) return 0;
+
             DestroyDragPreview();
             if (drop_indicator_idx_ >= 0) {
                 drop_indicator_idx_ = -1;
@@ -1114,6 +1175,7 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
             drag_active_  = false;
             drag_src_idx_ = -1;
             return 0;
+        }
 
         case WM_MOUSELEAVE: {
             tracking_ = false;

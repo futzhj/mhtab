@@ -649,9 +649,13 @@ LRESULT MainFrame::OnReleaseChild(WPARAM child_hwnd_w, LPARAM /*lp*/) {
     if (victim < 0) return 0;    /* 本实例不持有，属于正常情况 */
 
     MHX_LOG_INFO(L"OnReleaseChild: slot=%d child=%p released", victim, child_hwnd);
-    child_mgr_->DetachSlot(victim);
+    child_mgr_->DetachSlot(victim);                /* 关 hProcess wait */
     if (heartbeat_) heartbeat_->UnregisterSlot(victim);
-    tab_ctrl_->DetachSlot(victim);
+    /* 关键修复：用 ForgetSlot 而不是 DetachSlot。
+     * DetachSlot 会 SetParent(child, NULL) + WS_OVERLAPPEDWINDOW + SetForegroundWindow，
+     * 此时 child 已被新 owner SetParent 接管，再撤销会让 child 重新变 top-level，
+     * 用户看到的现象就是"分离窗口虽然关了，但 demo 仍以独立窗口存在"。 */
+    tab_ctrl_->ForgetSlot(victim);
 
     ::InvalidateRect(hwnd_, nullptr, TRUE);
     CheckAutoExit();
