@@ -80,3 +80,8 @@ reverse/*.code-workspace
 # Windows
 Thumbs.db
 desktop.ini
+
+# Scratch / commit message piping
+_cm.tmp
+_commit_msg.tmp
+*.tmp
