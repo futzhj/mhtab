@@ -245,6 +245,10 @@ LRESULT MainFrame::OnCreate(LPCREATESTRUCTW /*cs*/) {
      * 所以不会因为 ini 拼写错误而黑屏。 */
     tab_ctrl_->SetTheme(CreateTheme(sv.theme_name));
 
+    /* P2 + P4: 注入"拖拽出主窗口"的回调，让 MainFrame 决定 spawn 还是跨实例合并 */
+    tab_ctrl_->SetDragOutCallback(
+        [this](int slot_id, POINT screen_pt) { OnTabDragOut(slot_id, screen_pt); });
+
     /* W5-3: 工具栏 (图标 + 文字) - 复用菜单 ID 走 WM_COMMAND */
     toolbar_ = ::CreateWindowExW(
         0, TOOLBARCLASSNAMEW, L"",
@@ -389,11 +393,13 @@ LRESULT MainFrame::OnTimer(UINT_PTR id) {
     if (id != kPollTimerId) return 0;
 
     /* 1. 子进程退出探测 */
+    bool any_dead = false;
     if (child_mgr_) {
         int dead = child_mgr_->Poll();
         if (dead >= 0) {
             if (heartbeat_) heartbeat_->UnregisterSlot(dead);
             ::InvalidateRect(hwnd_, nullptr, TRUE);
+            any_dead = true;
         }
     }
 
@@ -402,6 +408,17 @@ LRESULT MainFrame::OnTimer(UINT_PTR id) {
 
     /* 3. 刷新状态栏 */
     UpdateStatusBar();
+
+    /* 4. P5: 维护 has_ever_had_tab_ + 自动退出检查
+     *    放在 timer 里集中维护，比在每个 AddSlot/RemoveSlot 调用方都 hook 更稳。 */
+    if (tab_ctrl_) {
+        if (tab_ctrl_->GetActiveCount() > 0) {
+            has_ever_had_tab_ = true;
+        } else if (any_dead) {
+            /* 仅在本轮检测到 child 退出时才检查，避免空闲 timer 反复尝试 */
+            CheckAutoExit();
+        }
+    }
     return 0;
 }
 
@@ -503,6 +520,9 @@ LRESULT MainFrame::OnCleanupView(WPARAM slot_id, LPARAM /*lp*/) {
     if (heartbeat_) heartbeat_->UnregisterSlot(sid);
     if (tab_ctrl_)  tab_ctrl_->RemoveSlot(sid);
     ::InvalidateRect(hwnd_, nullptr, TRUE);
+
+    /* P5: 子进程主动通知清理后，可能这是最后一个 Tab，立即检查退出 */
+    CheckAutoExit();
     return TRUE;
 }
 
@@ -806,6 +826,101 @@ LRESULT MainFrame::OnCommand(WORD id, WORD /*code*/, HWND /*ctrl*/) {
             return 0;
     }
     return 0;
+}
+
+/* ============================================================
+ * P2 + P4: OnTabDragOut
+ *
+ * 用户在 Tab Bar 拖拽某个 tab，松手时鼠标位置在主窗口外。
+ * TabController 已剥离自己的 drag 状态，把决策完全交给这里。
+ *
+ * 决策树：
+ *   1. WindowFromPoint(screen_pt) 找出落点最深的窗口
+ *   2. 顺着 GetAncestor(GA_ROOT) 找到顶层窗口
+ *   3. 顶层窗口的 class name 以 kMainFrameClassPrefix 开头 → mhtabx 主窗口
+ *      a. 不是自己（避免自合并 → 死循环）→ 跨实例合并 (MHX_REMBED_REQUEST)
+ *      b. 是自己 → 视作 spawn（鼠标抖动恰好回到自己上方）
+ *   4. 否则 → SpawnDetachedInstance 启动新 mhtabx 接管 child
+ * ============================================================ */
+void MainFrame::OnTabDragOut(int slot_id, POINT screen_pt) {
+    if (!tab_ctrl_ || !child_mgr_) return;
+
+    auto* slot = tab_ctrl_->FindSlot(slot_id);
+    if (!slot) return;
+    HWND child_hwnd = slot->child_hwnd;
+
+    /* 1. 先做完 detach，让 child 变独立顶层（与 ID_TAB_DETACH 同节奏） */
+    child_mgr_->DetachSlot(slot_id);
+    if (heartbeat_) heartbeat_->UnregisterSlot(slot_id);
+    tab_ctrl_->DetachSlot(slot_id);
+
+    if (!child_hwnd || !::IsWindow(child_hwnd)) {
+        ::InvalidateRect(hwnd_, nullptr, TRUE);
+        return;
+    }
+
+    /* 2. 落点检测 */
+    HWND drop = ::WindowFromPoint(screen_pt);
+    HWND drop_top = drop ? ::GetAncestor(drop, GA_ROOT) : nullptr;
+
+    bool cross_merge = false;
+    if (drop_top && drop_top != hwnd_) {
+        wchar_t class_buf[128] = {};
+        ::GetClassNameW(drop_top, class_buf, _countof(class_buf));
+        /* 主窗口类名以 mhtabx_MainFrame_ 开头 */
+        if (wcsncmp(class_buf, kMainFrameClassPrefix,
+                    wcslen(kMainFrameClassPrefix)) == 0) {
+            cross_merge = true;
+            /* 跨进程 SendMessageW 同步发送 reembed 请求。SMTO_ABORTIFHUNG
+             * 避免目标实例无响应时阻塞本进程；同时设置 3s 超时。 */
+            DWORD_PTR result = 0;
+            LRESULT r = ::SendMessageTimeoutW(
+                drop_top, MHX_REMBED_REQUEST,
+                reinterpret_cast<WPARAM>(child_hwnd), 0,
+                SMTO_ABORTIFHUNG, 3000, &result);
+            if (!r || static_cast<intptr_t>(result) < 0) {
+                MHX_LOG_WARN(L"Cross-merge failed (result=%lld), falling back to spawn",
+                             (long long)(intptr_t)result);
+                cross_merge = false;
+            } else {
+                MHX_LOG_INFO(L"Cross-merge OK: hwnd=%p moved to instance %p slot=%lld",
+                             child_hwnd, drop_top, (long long)(intptr_t)result);
+            }
+        }
+    }
+
+    /* 3. 不是跨合并 → 启动新 mhtabx 接管 */
+    if (!cross_merge) {
+        if (!child_mgr_->SpawnDetachedInstance(child_hwnd)) {
+            MHX_LOG_WARN(L"SpawnDetachedInstance failed; child remains top-level");
+        }
+    }
+
+    ::InvalidateRect(hwnd_, nullptr, TRUE);
+
+    /* 4. P5: 拖出后本实例可能已经空了，触发自动退出检查 */
+    CheckAutoExit();
+}
+
+/* ============================================================
+ * P5: CheckAutoExit
+ *
+ * 任何 mhtabx 实例最后 Tab 关闭后自动退出。
+ * 防止启动初期空状态触发的 has_ever_had_tab_ 守卫：必须有过 Tab 才退。
+ *
+ * 调用点：
+ *   - OnTabDragOut 之后（tab 移走）
+ *   - OnCleanupView 之后（child 自然退出）
+ *   - ChildProcessManager::Poll 之后（异常退出）
+ *
+ * 用 PostMessage 而不是 SendMessage(WM_CLOSE)，避免在消息处理中重入。
+ * ============================================================ */
+void MainFrame::CheckAutoExit() {
+    if (!tab_ctrl_ || !has_ever_had_tab_) return;
+    if (tab_ctrl_->GetActiveCount() == 0) {
+        MHX_LOG_INFO(L"Last tab gone, posting WM_CLOSE for auto-exit");
+        ::PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+    }
 }
 
 /* ============================================================

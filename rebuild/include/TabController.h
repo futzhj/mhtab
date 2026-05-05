@@ -12,6 +12,8 @@
 #include "common.h"
 #include "Theme.h"
 
+#include <functional>
+
 namespace mhx {
 
 /* 单个 Tab 槽位
@@ -139,6 +141,23 @@ public:
     /** 设置主题（带走所有权），传 nullptr 会后退为默认 SysTabControl32 外观 */
     void SetTheme(std::unique_ptr<ITheme> theme);
 
+    /**
+     * P2: 拖拽 Tab 到主窗口外时触发的回调。
+     *
+     * 调用时机：用户按下并拖动一个 Tab，松鼠标时屏幕坐标在主窗口
+     * GetWindowRect 范围之外（屏幕级判断）。
+     *
+     * MainFrame 在回调中决定：
+     *   - 落点是另一个 mhtabx 主窗口 → 跨实例合并 (MHX_REMBED_REQUEST)
+     *   - 否则 → child_mgr_->SpawnDetachedInstance 启动新 mhtabx 接管
+     *
+     * 回调参数：
+     *   - slot_id    被拖出 tab 对应的 slot id
+     *   - screen_pt  鼠标松开时的屏幕坐标（用于 WindowFromPoint 落点检测）
+     */
+    using DragOutCb = std::function<void(int slot_id, POINT screen_pt)>;
+    void SetDragOutCallback(DragOutCb cb) { on_drag_out_ = std::move(cb); }
+
     /** 遍历所有 slot（含已 Dead 的） */
     template <class F>
     void ForEachSlot(F&& fn) {
@@ -191,6 +210,12 @@ private:
 
     /* slots_ 用 unique_ptr 避免移动 vector 时 ChildSlot 地址变化 */
     std::vector<std::unique_ptr<ChildSlot>> slots_;
+
+    /* P2: 拖拽到主窗口外的回调（MainFrame 注入） */
+    DragOutCb  on_drag_out_;
+
+    /** 反查 tab_index 对应的 slot_id（不存在返回 -1） */
+    int TabIdxToSlotId(int tab_idx) const noexcept;
 };
 
 } /* namespace mhx */

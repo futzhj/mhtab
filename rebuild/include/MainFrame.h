@@ -77,6 +77,13 @@ private:
     LRESULT OnSetTabIcon(WPARAM slot_id, LPARAM icon);   /* W6-2 */
     LRESULT OnRembedRequest(WPARAM child_hwnd, LPARAM lp); /* W6-bugfix: 合并回主窗口 */
 
+    /* P2 + P4: TabController 拖拽到主窗口外的回调实现
+     * 决定是 spawn 新实例还是跨实例合并到落点 mhtabx 主窗口 */
+    void OnTabDragOut(int slot_id, POINT screen_pt);
+
+    /* P5: 检查最后一个 Tab 关闭，自动退出实例 */
+    void CheckAutoExit();
+
     /* 键盘输入转发到当前 active 子窗口 */
     bool ForwardKeyToActiveChild(UINT msg, WPARAM wp, LPARAM lp);
 
@@ -127,6 +134,10 @@ private:
     /* W6-3: 设置 ini 路径 + 当前主题名（缓存避免每次重读 SessionStore） */
     String settings_ini_path_;
     String current_theme_name_ = L"FlatModern";
+
+    /* P5: 至少有一个 Tab 出现过的标志。
+     * 防止刚启动还没 LaunchChild / Adopt 时空判定就触发退出。 */
+    bool   has_ever_had_tab_ = false;
 };
 
 } /* namespace mhx */

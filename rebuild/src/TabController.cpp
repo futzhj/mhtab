@@ -479,6 +479,17 @@ int TabController::HitTestTab(int x, int y) const {
     return (idx >= 0) ? idx : -1;
 }
 
+/* P2: 把 TabCtrl 的 tab index 反查为 slot_id */
+int TabController::TabIdxToSlotId(int tab_idx) const noexcept {
+    if (tab_idx < 0) return -1;
+    for (const auto& s : slots_) {
+        if (s && s->slot_id >= 0 && s->tab_index == tab_idx) {
+            return s->slot_id;
+        }
+    }
+    return -1;
+}
+
 /* ============================================================
  * W4: Tab subclass thunk
  * ============================================================ */
@@ -558,13 +569,42 @@ LRESULT TabController::HandleTabMessage(UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_LBUTTONUP: {
             if (drag_active_) {
-                int x = GET_X_LPARAM(lp);
-                int y = GET_Y_LPARAM(lp);
-                int dst = HitTestTab(x, y);
-                if (dst >= 0 && dst != drag_src_idx_) {
-                    ReorderTabs(drag_src_idx_, dst);
-                }
+                /* P2: 屏幕级判定 - 鼠标松开点是否在主窗口 GetWindowRect 内
+                 *   - 在内 → 现有重排逻辑
+                 *   - 在外 → 触发 on_drag_out_ 让 MainFrame 决定 spawn / cross-merge */
+                POINT screen_pt;
+                ::GetCursorPos(&screen_pt);
                 ::ReleaseCapture();
+
+                RECT main_rc = {};
+                bool inside = false;
+                if (parent_ && ::GetWindowRect(parent_, &main_rc)) {
+                    inside = ::PtInRect(&main_rc, screen_pt) != 0;
+                }
+
+                if (inside) {
+                    /* 重排：把屏幕坐标转回 tab_ctrl_ 客户区做 hit test */
+                    POINT local = screen_pt;
+                    ::ScreenToClient(tab_ctrl_, &local);
+                    int dst = HitTestTab(local.x, local.y);
+                    if (dst >= 0 && dst != drag_src_idx_) {
+                        ReorderTabs(drag_src_idx_, dst);
+                    }
+                } else {
+                    int sid = TabIdxToSlotId(drag_src_idx_);
+                    if (sid >= 0 && on_drag_out_) {
+                        /* 注意：on_drag_out_ 内部会调用 DetachSlot 等会清理
+                         * 当前 slot 的接口，状态机里的 drag_* 必须先重置，
+                         * 不然回调里再触发 SetCapture 会出乱 */
+                        drag_armed_   = false;
+                        drag_active_  = false;
+                        int dragged   = drag_src_idx_;
+                        drag_src_idx_ = -1;
+                        (void)dragged;
+                        on_drag_out_(sid, screen_pt);
+                        return 0;
+                    }
+                }
             }
             drag_armed_   = false;
             drag_active_  = false;
